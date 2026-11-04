@@ -1,0 +1,7 @@
+{
+  "name": "NVR Status",
+  "identifier": "com.dongsheng.nvrstatus",
+  "version": "3.0.0",
+  "main": "./cmd/nvr-gui",
+  "out": "build"
+}

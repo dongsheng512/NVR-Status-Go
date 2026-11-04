@@ -1,0 +1,371 @@
+// Package util contains pure helpers ported from nvr_core/util.py.
+package util
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// AVSampleMinAge is how old a playback window must be before probing:
+// avoid still-being-written segments that make RTSP time out.
+const AVSampleMinAge = 10 * time.Minute
+
+// LatestAVSampleInstant returns now-10m in UTC.
+func LatestAVSampleInstant(now time.Time) time.Time {
+	return now.UTC().Add(-AVSampleMinAge)
+}
+
+// AlternateClipTimes picks another clip start at least 30 minutes away from
+// avoidS inside [winS, min(winE, cutoff)]. Ported from util.alternate_clip_times.
+func AlternateClipTimes(winS, winE time.Time, seconds int, avoidS, cutoff time.Time) (time.Time, time.Time, bool) {
+	hardE := winE
+	if cutoff.Before(hardE) {
+		hardE = cutoff
+	}
+	sec := seconds
+	if sec < 3 {
+		sec = 3
+	}
+	gap := 30 * time.Minute
+	if hardE.Sub(winS) < time.Duration(sec)*time.Second+gap {
+		return time.Time{}, time.Time{}, false
+	}
+	ok := func(s, e time.Time) bool {
+		if s.Before(winS) || e.After(hardE) || !e.After(s) {
+			return false
+		}
+		d := s.Sub(avoidS)
+		if d < 0 {
+			d = -d
+		}
+		return d >= gap
+	}
+	deltas := []time.Duration{
+		-2 * time.Hour, 2 * time.Hour, -1 * time.Hour, time.Hour,
+		-3 * time.Hour, -90 * time.Minute,
+	}
+	for _, d := range deltas {
+		s := avoidS.Add(d)
+		e := s.Add(time.Duration(sec) * time.Second)
+		if ok(s, e) {
+			return s, e, true
+		}
+	}
+	span := hardE.Sub(winS)
+	mid := winS.Add(span / 2)
+	var s, e time.Time
+	if !avoidS.Before(mid) {
+		s = winS
+		e = s.Add(time.Duration(sec) * time.Second)
+	} else {
+		e = hardE
+		s = e.Add(-time.Duration(sec) * time.Second)
+	}
+	if ok(s, e) {
+		return s, e, true
+	}
+	return time.Time{}, time.Time{}, false
+}
+
+// ToInt converts a string to int, returning def for "" or bad input.
+func ToInt(v string, def int) int {
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// ToFloat converts a string to float64, returning def for "" or bad input.
+func ToFloat(v string, def float64) float64 {
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return def
+	}
+	return f
+}
+
+var channelSplit = regexp.MustCompile(`[,，、;；\s]+`)
+
+// ParseChannelList parses a channel filter. nil/empty means no filter.
+// Non-empty input with an invalid token returns an error (never silently
+// degrades to "all channels").
+func ParseChannelList(value any) ([]int, error) {
+	if value == nil {
+		return nil, nil
+	}
+	var items []string
+	switch v := value.(type) {
+	case bool:
+		return nil, fmt.Errorf("无法解析的通道列表: %v", value)
+	case int:
+		items = []string{strconv.Itoa(v)}
+	case string:
+		items = channelSplit.Split(v, -1)
+	case []int:
+		for _, n := range v {
+			items = append(items, strconv.Itoa(n))
+		}
+	case []string:
+		items = append(items, v...)
+	default:
+		return nil, fmt.Errorf("无法解析的通道列表: %v", value)
+	}
+	seen := map[int]bool{}
+	var out []int
+	for _, it := range items {
+		it = strings.TrimSpace(it)
+		if it == "" {
+			continue
+		}
+		n, err := strconv.Atoi(it)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("通道号无效: %q", it)
+		}
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+var instantToken = regexp.MustCompile(`^(\d{1,2})[:：](\d{2})$`)
+
+// ParseInstantList parses "19:05,16:20" into UTC instants on the local day
+// `daysAgo` days in the past. Future times are an error.
+func ParseInstantList(value any, daysAgo int, now time.Time) ([]time.Time, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	now = now.Local()
+
+	var tokens []string
+	var direct []time.Time
+	switch v := value.(type) {
+	case string:
+		tokens = channelSplit.Split(v, -1)
+	case time.Time:
+		direct = []time.Time{v}
+	case []time.Time:
+		direct = v
+	case []string:
+		tokens = v
+	default:
+		return nil, fmt.Errorf("无法解析的定点时刻列表: %v", value)
+	}
+	if tokens != nil {
+		nonEmpty := tokens[:0]
+		for _, t := range tokens {
+			if strings.TrimSpace(t) != "" {
+				nonEmpty = append(nonEmpty, t)
+			}
+		}
+		tokens = nonEmpty
+		if len(tokens) == 0 {
+			return nil, nil
+		}
+	}
+
+	seen := map[int64]bool{}
+	var out []time.Time
+	add := func(t time.Time) {
+		k := t.Unix()
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, t.UTC())
+		}
+	}
+
+	if direct != nil {
+		for _, dt := range direct {
+			loc := dt
+			if loc.Location() == time.UTC {
+				loc = loc.Local()
+			}
+			if loc.After(now) {
+				return nil, fmt.Errorf("定点时刻 %02d-%02d %02d:%02d 在未来, 该时刻的录像还不存在",
+					loc.Month(), loc.Day(), loc.Hour(), loc.Minute())
+			}
+			add(loc)
+		}
+		return out, nil
+	}
+
+	base := now.AddDate(0, 0, -daysAgo)
+	for _, tok := range tokens {
+		m := instantToken.FindStringSubmatch(strings.TrimSpace(tok))
+		if m == nil {
+			return nil, fmt.Errorf("定点时刻无效(应为 HH:MM): %q", tok)
+		}
+		hh, _ := strconv.Atoi(m[1])
+		mm, _ := strconv.Atoi(m[2])
+		if hh < 0 || hh > 23 || mm < 0 || mm > 59 {
+			return nil, fmt.Errorf("定点时刻超出范围: %q", tok)
+		}
+		local := time.Date(base.Year(), base.Month(), base.Day(), hh, mm, 0, 0, now.Location())
+		if local.After(now) {
+			return nil, fmt.Errorf("定点时刻 %s 在未来(%s), 该时刻的录像还不存在",
+				tok, base.Format("2006-01-02"))
+		}
+		add(local)
+	}
+	return out, nil
+}
+
+var tzSuffix = regexp.MustCompile(`[+-]\d{2}:\d{2}$`)
+
+// ParseHikTime parses a Hikvision time string into UTC. A value without a
+// timezone is interpreted in loc (device local wall clock) when loc is set.
+func ParseHikTime(value string, loc *time.Location) *time.Time {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return nil
+	}
+	hasZone := strings.HasSuffix(text, "Z") || tzSuffix.MatchString(text)
+	if hasZone {
+		for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05Z07:00", "2006-01-02 15:04:05Z07:00"} {
+			if t, err := time.Parse(layout, text); err == nil {
+				u := t.UTC()
+				return &u
+			}
+		}
+		return nil
+	}
+	// No timezone: the device reports local wall clock.
+	if loc == nil {
+		loc = time.UTC
+	}
+	for _, layout := range []string{
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+	} {
+		if t, err := time.ParseInLocation(layout, text, loc); err == nil {
+			u := t.UTC()
+			return &u
+		}
+	}
+	return nil
+}
+
+// Tools locates ffmpeg/ffprobe: bundled bin/ dirs first, then PATH.
+func Tools() map[string]string {
+	found := map[string]string{"ffmpeg": "", "ffprobe": ""}
+	for _, dir := range ToolBinDirs() {
+		for _, name := range []string{"ffmpeg", "ffprobe"} {
+			if found[name] != "" {
+				continue
+			}
+			for _, exe := range []string{name, name + ".exe"} {
+				p := filepath.Join(dir, exe)
+				if real, err := filepath.EvalSymlinks(p); err == nil {
+					p = real
+				}
+				if isRunnable(p) {
+					found[name] = p
+					break
+				}
+			}
+		}
+	}
+	for _, name := range []string{"ffmpeg", "ffprobe"} {
+		if found[name] == "" {
+			if p, err := exec.LookPath(name); err == nil {
+				found[name] = p
+			}
+		}
+	}
+	return found
+}
+
+// ToolBinDirs returns candidate directories holding bundled binaries.
+func ToolBinDirs() []string {
+	var dirs []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		p = filepath.Clean(p)
+		for _, d := range dirs {
+			if d == p {
+				return
+			}
+		}
+		dirs = append(dirs, p)
+	}
+	exe, err := os.Executable()
+	if err == nil {
+		exe, _ = filepath.EvalSymlinks(exe)
+		exeDir := filepath.Dir(exe)
+		add(filepath.Join(exeDir, "bin"))
+		// macOS .app: Contents/MacOS/exe → Contents/Frameworks/bin
+		contents := filepath.Dir(exeDir)
+		add(filepath.Join(contents, "Frameworks", "bin"))
+		add(filepath.Join(contents, "Resources", "bin"))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		add(filepath.Join(wd, "bin"))
+		add(filepath.Join(wd, "ffmpeg", "bin"))
+		add(filepath.Join(wd, "_internal", "bin"))
+	}
+	return dirs
+}
+
+func isRunnable(path string) bool {
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return false
+	}
+	return true
+}
+
+var unsafeFilename = regexp.MustCompile(`[\\/:*?"<>|\r\n\t]+`)
+var whitespace = regexp.MustCompile(`\s+`)
+var multiUnderscore = regexp.MustCompile(`_+`)
+
+// SafeFilename returns a filesystem-safe fragment.
+func SafeFilename(text string, maxLen int) string {
+	s := strings.TrimSpace(text)
+	s = unsafeFilename.ReplaceAllString(s, "_")
+	s = whitespace.ReplaceAllString(s, "_")
+	s = multiUnderscore.ReplaceAllString(s, "_")
+	s = strings.Trim(s, "._")
+	if s == "" {
+		s = "unknown"
+	}
+	if maxLen > 0 && len([]rune(s)) > maxLen {
+		s = string([]rune(s)[:maxLen])
+	}
+	return s
+}
+
+// ErrCancelled is returned when the user cancels a scan.
+var ErrCancelled = errors.New("scan cancelled")
+
+// CheckCancel returns ErrCancelled when ctx is done.
+func CheckCancel(ctx interface{ Err() error }) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ErrCancelled
+	}
+	return nil
+}

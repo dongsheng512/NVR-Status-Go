@@ -1,0 +1,5 @@
+#!/bin/sh
+# 提交前脱敏检查。启用：git config core.hooksPath .githooks
+set -e
+root=$(git rev-parse --show-toplevel)
+exec python3 "$root/scripts/check-secrets.py"
