@@ -4,6 +4,7 @@
 package scan
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -283,6 +284,29 @@ func (r *Runner) Queue(devices []model.Device, opt model.ScanOptions, progress f
 func (r *Runner) QueueWith(devices []model.Device, opt model.ScanOptions, progress func(model.Progress), onDevice func(model.Report), onNVR func(*NVR)) []model.Report {
 	workers := clamp(opt.DeviceWorkers, 1, 4)
 	return r.queueConcurrent(devices, opt, progress, onDevice, onNVR, workers)
+}
+
+// QueueCtx is Queue bound to ctx: cancelling ctx aborts in-flight ISAPI
+// requests and kills running ffmpeg children, and devices not yet started fail
+// fast instead of scanning. Callers should check ctx.Err() afterwards to tell
+// "cancelled" apart from "device broken".
+func (r *Runner) QueueCtx(ctx context.Context, devices []model.Device, opt model.ScanOptions, progress func(model.Progress), onDevice func(model.Report)) []model.Report {
+	return r.QueueWith(devices, opt, progress, onDevice, bindContext(ctx))
+}
+
+// RunCtx is Run bound to ctx (single device).
+func (r *Runner) RunCtx(ctx context.Context, device model.Device, opt model.ScanOptions, name string, progress func(model.Progress)) model.Report {
+	return r.RunWith(device, opt, name, progress, bindContext(ctx))
+}
+
+// bindContext returns the onNVR hook that installs ctx on the freshly built
+// client. Build happens before the hook runs, so every request in NVR.Run —
+// including the recording and ffmpeg layers that borrow CheckCancel — sees it.
+func bindContext(ctx context.Context) func(*NVR) {
+	if ctx == nil {
+		return nil
+	}
+	return func(n *NVR) { n.Client.SetContext(ctx) }
 }
 
 // queueConcurrent runs up to workers devices at once. Progress is aggregated

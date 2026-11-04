@@ -178,12 +178,21 @@ func run(argv []string) int {
 		return 1
 	}
 
+	// Ctrl-C / SIGTERM must abort the scan, not just the process: the context
+	// reaches every ISAPI request and kills running ffmpeg children.
+	ctx, signalExit, stopSignals := util.SignalContext()
+	defer stopSignals()
+
 	runner := scan.NewRunner(scan.Options{Quiet: false, DefaultSaveRoot: defaultSaveRoot()})
-	reports := runner.Queue(selected, opts, func(p model.Progress) {
+	reports := runner.QueueCtx(ctx, selected, opts, func(p model.Progress) {
 		if p.Message != "" {
 			fmt.Fprintf(os.Stderr, "  · %s\n", p.Message)
 		}
 	}, nil)
+	if code := signalExit(); code != 0 {
+		fmt.Fprintln(os.Stderr, "巡检已中断，未生成报告（已停止所有请求与 ffmpeg 子进程）。")
+		return code
+	}
 	report.RenderAll(os.Stdout, reports, a.verbose)
 
 	failed := false
