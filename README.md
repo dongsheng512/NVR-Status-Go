@@ -1,6 +1,6 @@
 # NVR Status 3.0（Go + MyGo）
 
-海康威视 NVR 状态巡检工具。**自 2026-11 起，本仓库（Go 1.27 + [MyGo](https://github.com/egoist/mygo) v0.5.1）是唯一开发主线**；Python/PySide6 的 v2.3.0 保留在本地作为行为对照（oracle），不再随本仓库分发。
+海康威视 NVR 状态巡检工具。**自 2026-11 起，本仓库（Go 1.27 + [MyGo](https://github.com/egoist/mygo) v0.5.1）是唯一开发主线**。Python/PySide6 的 v2.3.0 保留在[独立旧仓库](https://github.com/dongsheng512/NVR-Status)（已停止维护，仅作归档），本地副本作行为对照（oracle）。**两个仓库彼此独立、历史不共享。**
 
 - 业务核心与 CLI：纯 Go，无 GUI 依赖，可单独构建为 `nvr` 单二进制
 - GUI：MyGo 原生绘制（GPU、无 WebView），已实现功能对等（M7）
@@ -62,7 +62,8 @@ go tool mygo build
 
 - 配置格式、用户数据目录（`~/Library/Application Support/NVRStatus`、`%APPDATA%\NVRStatus`）保持兼容；已有的 `profiles.json`、历史报告 `reports/`、系统钥匙串密码可直接沿用。
 - CLI 参数、报告字段、健康判定口径（含 `chanDetectResult` 白名单与双「未知」比例口径）与 v2.3.0 对齐。
-- 本仓库于 2026-11-04 重建为干净的 Go 版主线，**不带 v2.x 的提交历史、tag 与 release**；旧代码仅留本地作 oracle 双跑，直到 M8 的逐字段对照完成。
+- 本仓库于 2026-11-04 新建为干净的 Go 版主线，**不带 v2.x 的提交历史、tag 与 release**；与 Python 版仓库是**两个独立仓库**，不是分支、不是 fork。
+- Python v2.3.0 留在 `dongsheng512/NVR-Status`，**已停止维护**，仅作归档与 oracle 双跑，直到 M8 的逐字段对照完成；后续功能开发、issue 与发布都以本仓库为准。
 - 详细阶段与验收标准见 [PLAN.md](PLAN.md)。
 
 ## 提交前脱敏检查（务必启用）
