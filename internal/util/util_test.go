@@ -6,14 +6,16 @@ import (
 	"time"
 )
 
+// ParseChannelList 只接受 string。原先的 int/[]int/bool/float 分支是为了兼容
+// Python 的鸭子类型（None/str/list 都可能），已删除 —— 现在传错类型是编译错误，
+// 不需要运行时用例。
 func TestParseChannelList(t *testing.T) {
 	tests := []struct {
 		name    string
-		in      any
+		in      string
 		want    []int
 		wantErr bool
 	}{
-		{"nil", nil, nil, false},
 		{"empty", "", nil, false},
 		{"spaces", "   ", nil, false},
 		{"comma", "31,64", []int{31, 64}, false},
@@ -22,14 +24,10 @@ func TestParseChannelList(t *testing.T) {
 		{"fullwidth comma", "31，64", []int{31, 64}, false},
 		{"semicolon", "31;64", []int{31, 64}, false},
 		{"dedupe", "31,31,64", []int{31, 64}, false},
-		{"int slice", []int{31, 64}, []int{31, 64}, false},
-		{"single int", 31, []int{31}, false},
 		{"bad", "abc", nil, true},
 		{"partial bad", "31,abc", nil, true},
 		{"zero", "0", nil, true},
 		{"negative", "-3", nil, true},
-		{"bool", true, nil, true},
-		{"float", 3.5, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -44,16 +42,17 @@ func TestParseChannelList(t *testing.T) {
 	}
 }
 
+// ParseInstantList 同样只接受 string。已经持有 []time.Time 的调用方
+// （model.ScanOptions.AVAt）直接赋值，不需要经过解析器。
 func TestParseInstantList(t *testing.T) {
 	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.Local)
 	tests := []struct {
 		name    string
-		in      any
+		in      string
 		daysAgo int
 		want    []string
 		wantErr bool
 	}{
-		{"nil", nil, 0, nil, false},
 		{"empty", "", 0, nil, false},
 		{"one", "09:05", 0, []string{"09:05"}, false},
 		{"comma", "09:05,08:30", 0, []string{"09:05", "08:30"}, false},
@@ -65,7 +64,6 @@ func TestParseInstantList(t *testing.T) {
 		{"bad minute", "09:5x", 0, nil, true},
 		{"out of range", "25:00", 0, nil, true},
 		{"bad format", "0905", 0, nil, true},
-		{"unsupported", 3.5, 0, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -93,13 +91,16 @@ func TestParseInstantList(t *testing.T) {
 	}
 }
 
+// 同一个 now 下重复解析必须给出完全相同的结果（纯函数，不依赖调用次数或
+// 进程状态）。原先这里靠「把上次的 []time.Time 再喂回去」验证，那是鸭子类型
+// 才需要的路径；现在直接重复解析同一串输入即可。
 func TestParseInstantListIdempotent(t *testing.T) {
 	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.Local)
 	first, err := ParseInstantList("09:05,08:30", 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := ParseInstantList(first, 0, now)
+	second, err := ParseInstantList("09:05,08:30", 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}

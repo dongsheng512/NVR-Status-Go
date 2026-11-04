@@ -120,30 +120,15 @@ func ParsePercent(s string) (float64, bool) {
 
 var channelSplit = regexp.MustCompile(`[,，、;；\s]+`)
 
-// ParseChannelList parses a channel filter. nil/empty means no filter.
-// Non-empty input with an invalid token returns an error (never silently
-// degrades to "all channels").
-func ParseChannelList(value any) ([]int, error) {
-	if value == nil {
-		return nil, nil
-	}
-	var items []string
-	switch v := value.(type) {
-	case bool:
-		return nil, fmt.Errorf("无法解析的通道列表: %v", value)
-	case int:
-		items = []string{strconv.Itoa(v)}
-	case string:
-		items = channelSplit.Split(v, -1)
-	case []int:
-		for _, n := range v {
-			items = append(items, strconv.Itoa(n))
-		}
-	case []string:
-		items = append(items, v...)
-	default:
-		return nil, fmt.Errorf("无法解析的通道列表: %v", value)
-	}
+// ParseChannelList parses a channel filter such as "31,64" or "31 64".
+// Empty input means no filter. Non-empty input with an invalid token returns an
+// error (never silently degrades to "all channels").
+//
+// It takes a string rather than `any`: the only producers are the CLI flag and
+// a record's channel number, both already strings. Callers that hold []int
+// (profiles.json) do not need to parse anything.
+func ParseChannelList(value string) ([]int, error) {
+	items := channelSplit.Split(value, -1)
 	seen := map[int]bool{}
 	var out []int
 	for _, it := range items {
@@ -170,40 +155,26 @@ var instantToken = regexp.MustCompile(`^(\d{1,2})[:：](\d{2})$`)
 
 // ParseInstantList parses "19:05,16:20" into UTC instants on the local day
 // `daysAgo` days in the past. Future times are an error.
-func ParseInstantList(value any, daysAgo int, now time.Time) ([]time.Time, error) {
-	if value == nil {
-		return nil, nil
-	}
+//
+// Only strings are accepted. A caller that already holds []time.Time sets it
+// directly (model.ScanOptions.AVAt); routing it back through a parser would
+// imply the value needs reparsing, which it does not.
+func ParseInstantList(value string, daysAgo int, now time.Time) ([]time.Time, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
 	now = now.Local()
 
-	var tokens []string
-	var direct []time.Time
-	switch v := value.(type) {
-	case string:
-		tokens = channelSplit.Split(v, -1)
-	case time.Time:
-		direct = []time.Time{v}
-	case []time.Time:
-		direct = v
-	case []string:
-		tokens = v
-	default:
-		return nil, fmt.Errorf("无法解析的定点时刻列表: %v", value)
+	tokens := channelSplit.Split(value, -1)
+	nonEmpty := tokens[:0]
+	for _, t := range tokens {
+		if strings.TrimSpace(t) != "" {
+			nonEmpty = append(nonEmpty, t)
+		}
 	}
-	if tokens != nil {
-		nonEmpty := tokens[:0]
-		for _, t := range tokens {
-			if strings.TrimSpace(t) != "" {
-				nonEmpty = append(nonEmpty, t)
-			}
-		}
-		tokens = nonEmpty
-		if len(tokens) == 0 {
-			return nil, nil
-		}
+	tokens = nonEmpty
+	if len(tokens) == 0 {
+		return nil, nil
 	}
 
 	seen := map[int64]bool{}
@@ -214,21 +185,6 @@ func ParseInstantList(value any, daysAgo int, now time.Time) ([]time.Time, error
 			seen[k] = true
 			out = append(out, t.UTC())
 		}
-	}
-
-	if direct != nil {
-		for _, dt := range direct {
-			loc := dt
-			if loc.Location() == time.UTC {
-				loc = loc.Local()
-			}
-			if loc.After(now) {
-				return nil, fmt.Errorf("定点时刻 %02d-%02d %02d:%02d 在未来, 该时刻的录像还不存在",
-					loc.Month(), loc.Day(), loc.Hour(), loc.Minute())
-			}
-			add(loc)
-		}
-		return out, nil
 	}
 
 	base := now.AddDate(0, 0, -daysAgo)
