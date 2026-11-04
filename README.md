@@ -45,10 +45,11 @@ make vet             # go vet ./...
 
 make cli             # → build/nvr  与 GUI 同步维护，不进发布包
 make app             # → .app + .dmg（自带 ffmpeg，见下）
+make run             # = make app + open -n，日常验证用这一条
 ```
 
-> MyGo 要求 Go 1.27+。若 `go env GOMODCACHE` 不可写（沙箱环境），使用
-> `GOMODCACHE=/tmp/gomod make build`。
+> MyGo 要求 Go 1.27+。若卡在 `go: downloading ...` 很久或被 SIGTERM 杀掉，
+> 说明模块缓存不可写，改用 `GOMODCACHE=/tmp/gomod make app`。
 
 ### MyGo 打包
 
