@@ -5,6 +5,7 @@ package monitor
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -77,7 +78,7 @@ func (s Snapshot) Metrics() string {
 		if r.Error != "" {
 			up = 0
 		}
-		fmt.Fprintf(&b, "nvr_up{device=%q,ip=%q} %d\n", r.DeviceName, r.IP, up)
+		fmt.Fprintf(&b, "nvr_up{device=%s,ip=%s} %d\n", label(r.DeviceName), label(r.IP), up)
 	}
 	b.WriteString("# HELP nvr_health_status Device health verdict as a one-hot gauge.\n")
 	b.WriteString("# TYPE nvr_health_status gauge\n")
@@ -86,45 +87,97 @@ func (s Snapshot) Metrics() string {
 		if status == "" {
 			status = "未知"
 		}
-		fmt.Fprintf(&b, "nvr_health_status{device=%q,ip=%q,status=%q} 1\n", r.DeviceName, r.IP, status)
+		fmt.Fprintf(&b, "nvr_health_status{device=%s,ip=%s,status=%s} 1\n",
+			label(r.DeviceName), label(r.IP), label(status))
 	}
 	b.WriteString("# HELP nvr_cameras_total Configured camera channels.\n")
 	b.WriteString("# TYPE nvr_cameras_total gauge\n")
 	for _, r := range s.Reports {
-		fmt.Fprintf(&b, "nvr_cameras_total{device=%q,ip=%q} %d\n", r.DeviceName, r.IP, r.Health.Stats.CameraTotal)
+		fmt.Fprintf(&b, "nvr_cameras_total{device=%s,ip=%s} %d\n",
+			label(r.DeviceName), label(r.IP), r.Health.Stats.CameraTotal)
 	}
 	b.WriteString("# HELP nvr_cameras_online Camera channels online.\n")
 	b.WriteString("# TYPE nvr_cameras_online gauge\n")
 	for _, r := range s.Reports {
-		fmt.Fprintf(&b, "nvr_cameras_online{device=%q,ip=%q} %d\n", r.DeviceName, r.IP, r.Health.Stats.Online)
+		fmt.Fprintf(&b, "nvr_cameras_online{device=%s,ip=%s} %d\n",
+			label(r.DeviceName), label(r.IP), r.Health.Stats.Online)
 	}
 	b.WriteString("# HELP nvr_channels_total Recording channels.\n")
 	b.WriteString("# TYPE nvr_channels_total gauge\n")
 	for _, r := range s.Reports {
-		fmt.Fprintf(&b, "nvr_channels_total{device=%q,ip=%q} %d\n", r.DeviceName, r.IP, r.Health.Stats.ChannelTotal)
+		fmt.Fprintf(&b, "nvr_channels_total{device=%s,ip=%s} %d\n",
+			label(r.DeviceName), label(r.IP), r.Health.Stats.ChannelTotal)
 	}
 	b.WriteString("# HELP nvr_disk_usage_percent Disk usage by drive.\n")
 	b.WriteString("# TYPE nvr_disk_usage_percent gauge\n")
+	var unknown strings.Builder
 	for _, r := range s.Reports {
 		for _, d := range r.Drives {
-			pct := parsePercent(d.Usage)
-			fmt.Fprintf(&b, "nvr_disk_usage_percent{device=%q,ip=%q,drive=%q} %.1f\n",
-				r.DeviceName, r.IP, d.Name, pct)
+			pct, ok := parsePercent(d.Usage)
+			if !ok {
+				// Never report an unparsable usage as 0%: that reads as "empty
+				// disk". Expose it as an explicit unknown instead.
+				fmt.Fprintf(&unknown, "nvr_disk_usage_unknown{device=%s,ip=%s,drive=%s} 1\n",
+					label(r.DeviceName), label(r.IP), label(d.Name))
+				continue
+			}
+			fmt.Fprintf(&b, "nvr_disk_usage_percent{device=%s,ip=%s,drive=%s} %.1f\n",
+				label(r.DeviceName), label(r.IP), label(d.Name), pct)
 		}
 	}
 	b.WriteString("# HELP nvr_audio_probe_warnings Audio probe warnings.\n")
 	b.WriteString("# TYPE nvr_audio_probe_warnings gauge\n")
 	for _, r := range s.Reports {
-		fmt.Fprintf(&b, "nvr_audio_probe_warnings{device=%q,ip=%q} %d\n", r.DeviceName, r.IP, r.Health.Stats.AudioProbeWarn)
+		fmt.Fprintf(&b, "nvr_audio_probe_warnings{device=%s,ip=%s} %d\n",
+			label(r.DeviceName), label(r.IP), r.Health.Stats.AudioProbeWarn)
+	}
+	if unknown.Len() > 0 {
+		b.WriteString("# HELP nvr_disk_usage_unknown Drives whose usage string could not be parsed.\n")
+		b.WriteString("# TYPE nvr_disk_usage_unknown gauge\n")
+		b.WriteString(unknown.String())
 	}
 	return b.String()
 }
 
-func parsePercent(s string) float64 {
-	s = strings.TrimSuffix(strings.TrimSpace(s), "%")
-	var v float64
-	_, _ = fmt.Sscanf(s, "%f", &v)
-	return v
+// label renders a Prometheus label value. %q is not equivalent: the exposition
+// format only allows \\, \" and \n, so Go's \t, \x00, \u... escapes would make
+// the whole scrape fail. Control characters are dropped instead.
+func label(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			// dropped: CR is not legal in a label value and would break parsing
+		default:
+			if r < 0x20 || r == 0x7f {
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// parsePercent returns the numeric value of strings like "98.0%" and whether
+// the string was actually a number.
+func parsePercent(s string) (float64, bool) {
+	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "%"))
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // SortedReports returns reports sorted by device name for stable output.

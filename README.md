@@ -140,7 +140,14 @@ go build -o build/nvr-agent ./cmd/nvr-agent
 - `GET /healthz`：最新巡检 JSON，有设备失败/严重时返回 503
 - `GET /metrics`：Prometheus 文本指标（`nvr_up`、`nvr_health_status`、`nvr_cameras_online`、`nvr_disk_usage_percent` 等）
 - `GET /api/reports`：最新完整报告
-- `--webhook <url>`：巡检完成后 POST JSON，可接企业微信/钉钉中转
+- `--webhook <url>`：巡检完成后 POST JSON，可接企业微信/钉钉中转。失败按 1s/2s 重试两次；4xx 不重试（重发同样的载荷没意义）
 - `--once`：只跑一次后退出
+- `--token <t>` / `--listen <addr>`：见下
 
-> 安全提示：`/healthz` 与 `/api/reports` 会返回设备名、IP 与通道名，且无鉴权。默认只绑 loopback；改用 `--listen 0.0.0.0:9101` 前请自行加访问控制。
+**鉴权**：三个端点都会返回设备名、IP、通道名。
+
+- 绑回环地址（默认）：不要求令牌，开箱即用。
+- 绑非回环地址（如 `--listen 0.0.0.0:9101`）：**自动生成本次启动有效的令牌并打印**，所有端点需带
+  `Authorization: Bearer <令牌>`；想固定令牌就用 `--token` 指定。Prometheus 侧配 `bearer_token_file` 即可。
+
+> 磁盘使用率无法解析时不会退化成 `0%`（那会被读成"空盘"），而是单独输出 `nvr_disk_usage_unknown{...} 1`。
