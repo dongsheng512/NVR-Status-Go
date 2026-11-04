@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"time"
 
 	"nvrstatus/internal/avprobe"
 	"nvrstatus/internal/health"
@@ -450,5 +449,3 @@ func clamp(v, lo, hi int) int {
 	}
 	return v
 }
-
-var _ = time.Now // keep time imported for future timing hooks

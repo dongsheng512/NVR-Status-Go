@@ -116,3 +116,55 @@ func TestRunCtxCancelledFailsFast(t *testing.T) {
 		t.Fatal("ctx 已取消时应返回错误报告")
 	}
 }
+
+// TestQueueCtxCancelWithConcurrentDevices: 4 台设备并行时取消，必须同时打断所有
+// 在途请求，而不是等某台设备超时。真实场景就是 4 台 NVR 一起巡检、用户按了取消。
+func TestQueueCtxCancelWithConcurrentDevices(t *testing.T) {
+	const devices = 4
+	devs := make([]model.Device, 0, devices)
+	reached := make([]<-chan struct{}, 0, devices)
+	for i := 0; i < devices; i++ {
+		srv, hit := blackHoleNVR(t)
+		devs = append(devs, serverDevice(t, srv))
+		reached = append(reached, hit)
+	}
+
+	r := NewRunner(Options{Quiet: true, Tools: noTools})
+	opt := model.DefaultScanOptions()
+	opt.NoSearch = true
+	opt.DeviceWorkers = devices
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan []model.Report, 1)
+	go func() { done <- r.QueueCtx(ctx, devs, opt, nil, nil) }()
+
+	// 等到至少两台设备都已发出请求，确保取消发生在并发在途状态。
+	started := 0
+	deadline := time.After(5 * time.Second)
+	for started < 2 {
+		select {
+		case <-reached[started]:
+			started++
+		case <-deadline:
+			t.Fatalf("只有 %d 台设备发出请求，测试前提不成立", started)
+		}
+	}
+
+	cancel()
+
+	select {
+	case reps := <-done:
+		if len(reps) != devices {
+			t.Fatalf("报告数 = %d, 期望 %d", len(reps), devices)
+		}
+		for i, rep := range reps {
+			if rep.Error == "" {
+				t.Fatalf("第 %d 台取消后仍报告成功: %+v", i+1, rep)
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("并发取消后队列未退出：仍有请求挂在设备上")
+	}
+}

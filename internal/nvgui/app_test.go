@@ -394,3 +394,59 @@ func TestQuickDeepToggle(t *testing.T) {
 		t.Fatal("deep check did not turn off")
 	}
 }
+
+// TestScanDiffUsesPreviousArchive: 「与上次相比」必须拿上一份归档做基准，而不是
+// 巡检刚写进去的这一份。后者会让每次巡检都显示「无变化」——历史对比等于失效。
+// 这个用例同时覆盖「对比在后台算完并通过 post 发布」这条路径。
+func TestScanDiffUsesPreviousArchive(t *testing.T) {
+	srv := fakeNVR(t)
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+	ip := u.Hostname()
+
+	app := newTestApp(t)
+	if _, err := history.SaveReport(model.Report{
+		DeviceName: "NVR-GUI",
+		IP:         ip,
+		Health:     model.HealthSummary{Status: "严重"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	app.devices = []model.Device{{Name: "NVR-GUI", IP: ip, Port: port, Username: "admin", Password: "pw"}}
+	app.target = "NVR-GUI"
+	app.opt = model.DefaultScanOptions()
+	app.syncFormFromOptions()
+
+	tt := ui.NewTester(app.View, 1280, 820)
+	if err := tt.Click("开始巡检"); err != nil {
+		t.Fatalf("click: %v", err)
+	}
+	done := app.ScanDone()
+	if done == nil {
+		t.Fatal("scan did not start")
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("scan timed out")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if d := app.DiffFor(ip); d != nil {
+			if d.HealthBefore != "严重" {
+				t.Fatalf("对比基准应为归档的上一份（严重），实际 HealthBefore=%q", d.HealthBefore)
+			}
+			if d.HealthAfter == "" {
+				t.Fatal("HealthAfter 为空")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("后台历史对比没有发布结果")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

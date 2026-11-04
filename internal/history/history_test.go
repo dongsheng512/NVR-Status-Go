@@ -214,3 +214,45 @@ func TestListReportsDefaultsHealthToUnknown(t *testing.T) {
 		t.Fatalf("metas = %#v", metas)
 	}
 }
+
+// TestLatestForDeviceExceptSkipsGivenReport: the GUI archives the fresh report
+// before computing the diff off the UI thread, so the lookup must be able to
+// ignore that exact file — otherwise every scan compares against itself and
+// always reports "no changes".
+func TestLatestForDeviceExceptSkipsGivenReport(t *testing.T) {
+	setupHistory(t)
+	oldPath, err := SaveReport(sampleReport("NVR-A", "严重"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPath, err := SaveReport(sampleReport("NVR-A", "良好"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldPath == newPath {
+		t.Fatalf("两份报告写到了同一个文件: %s", newPath)
+	}
+
+	latest, err := LatestForDevice("10.0.0.1")
+	if err != nil || latest == nil {
+		t.Fatalf("LatestForDevice: %v %v", latest, err)
+	}
+	if latest.Health.Status != "良好" {
+		t.Fatalf("LatestForDevice 应返回最新一份，实际健康=%q", latest.Health.Status)
+	}
+
+	prev, err := LatestForDeviceExcept("10.0.0.1", newPath)
+	if err != nil || prev == nil {
+		t.Fatalf("LatestForDeviceExcept: %v %v", prev, err)
+	}
+	if prev.Health.Status != "严重" {
+		t.Fatalf("应跳过指定文件并返回上一份，实际健康=%q", prev.Health.Status)
+	}
+
+	// 只有一份时，跳过它就应当返回 nil（而不是回退到它自己）。
+	if p, err := LatestForDeviceExcept("10.0.0.1", oldPath); err == nil && p != nil {
+		if p.Health.Status == "严重" {
+			t.Fatalf("跳过旧报告后仍返回了旧报告: %+v", p.Health)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package history
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"nvrstatus/internal/model"
@@ -41,6 +42,14 @@ func (d Diff) Summary() string {
 
 // LatestForDevice returns the newest archived report for one device IP.
 func LatestForDevice(ip string) (*model.Report, error) {
+	return LatestForDeviceExcept(ip, "")
+}
+
+// LatestForDeviceExcept is LatestForDevice ignoring the archive at skipPath.
+// The GUI saves the fresh report before computing the diff off the UI thread;
+// without the exclusion it could compare that report against itself and always
+// report "no changes".
+func LatestForDeviceExcept(ip, skipPath string) (*model.Report, error) {
 	if strings.TrimSpace(ip) == "" {
 		return nil, nil
 	}
@@ -49,11 +58,22 @@ func LatestForDevice(ip string) (*model.Report, error) {
 		return nil, err
 	}
 	for _, meta := range metas {
-		if meta.IP == ip {
-			return LoadReport(meta.Path)
+		if meta.IP != ip {
+			continue
 		}
+		if skipPath != "" && samePath(meta.Path, skipPath) {
+			continue
+		}
+		return LoadReport(meta.Path)
 	}
 	return nil, nil
+}
+
+func samePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // Compare diffs two reports. Issue detection mirrors the CLI's

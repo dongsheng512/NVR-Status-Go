@@ -195,6 +195,12 @@ func run(argv []string) int {
 	}
 	report.RenderAll(os.Stdout, reports, a.verbose)
 
+	return exitCode(reports)
+}
+
+// exitCode maps inspection results to the CLI exit status:
+// 0 ok, 1 any device failed, 2 no failures but at least one 严重 verdict.
+func exitCode(reports []model.Report) int {
 	failed := false
 	severe := false
 	for _, r := range reports {

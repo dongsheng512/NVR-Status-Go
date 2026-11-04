@@ -122,9 +122,12 @@ type App struct {
 	progress      float64
 	progressLabel string
 	scanDone      chan struct{}
-	logs          []logLine
-	logExpanded   bool
-	logMu         sync.Mutex
+	// scanSeq increments per scan so a late background diff from an older run
+	// cannot overwrite the current one.
+	scanSeq     int
+	logs        []logLine
+	logExpanded bool
+	logMu       sync.Mutex
 
 	// results
 	report       *model.Report
@@ -453,6 +456,7 @@ func (a *App) startScan() {
 	a.cancelScan = cancel
 	a.scanning = true
 	a.singleCheck = false
+	a.scanSeq++
 	a.scanDone = make(chan struct{})
 	a.progress = 0
 	a.progressLabel = "准备巡检…"
@@ -533,23 +537,38 @@ func (a *App) finishScan(rep *model.Report) {
 		a.progressLabel = "巡检完成"
 		a.logf(fmt.Sprintf("巡检完成：%s（健康 %s）", rep.DeviceName, rep.Health.Status), levelForHealth(rep.Health.Status))
 	}
+	// Archive first: the diff below must compare against the *previous* scan, so
+	// the fresh file has to be excluded. Reading the archive can take hundreds
+	// of ms with many reports, hence the background computation.
+	savedPath := a.saveHistory(rep)
 	a.diffs = map[string]*history.Diff{}
+	a.diff = nil
 	if rep.Error == "" {
 		reports := a.reports
 		if len(reports) == 0 {
 			reports = []model.Report{*rep}
 		}
-		for _, r := range reports {
-			if prev, err := history.LatestForDevice(r.IP); err == nil && prev != nil {
+		seq := a.scanSeq
+		deviceIP := rep.IP
+		go func() {
+			diffs := make(map[string]*history.Diff, len(reports))
+			for _, r := range reports {
+				prev, err := history.LatestForDeviceExcept(r.IP, savedPath)
+				if err != nil || prev == nil {
+					continue
+				}
 				d := history.Compare(*prev, r)
-				a.diffs[r.IP] = &d
+				diffs[r.IP] = &d
 			}
-		}
-		a.diff = a.diffs[rep.IP]
-	} else {
-		a.diff = nil
+			a.post(func() {
+				if seq != a.scanSeq || len(diffs) == 0 {
+					return // a newer scan already published its own diffs
+				}
+				a.diffs = diffs
+				a.diff = a.diffs[deviceIP]
+			})
+		}()
 	}
-	a.saveHistory(rep)
 	a.recordLastHealth()
 	a.saveSettings()
 	if a.scanDone != nil {
@@ -559,6 +578,15 @@ func (a *App) finishScan(rep *model.Report) {
 
 // ScanDone is closed when the current scan finishes (tests use it to wait).
 func (a *App) ScanDone() <-chan struct{} { return a.scanDone }
+
+// DiffFor returns the last published comparison for a device. The background
+// diff publishes through post(), so callers that are not on the UI thread must
+// use this accessor instead of touching a.diffs.
+func (a *App) DiffFor(ip string) *history.Diff {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.diffs[ip]
+}
 
 // recordLastHealth keeps a per-device verdict for the sidebar list.
 func (a *App) recordLastHealth() {
@@ -673,13 +701,18 @@ func (a *App) deviceForReport(rep model.Report) (model.Device, bool) {
 }
 
 // saveHistory archives the report.
-func (a *App) saveHistory(rep *model.Report) {
+// saveHistory archives the report and returns the file path ("" when there was
+// nothing to save) so the diff can skip it.
+func (a *App) saveHistory(rep *model.Report) string {
 	if rep == nil || rep.Error != "" {
-		return
+		return ""
 	}
-	if _, err := history.SaveReport(*rep); err != nil {
+	path, err := history.SaveReport(*rep)
+	if err != nil {
 		a.logf("归档巡检报告失败: "+err.Error(), "warn")
+		return ""
 	}
+	return path
 }
 
 // openHistory loads the archive list and shows the dialog.
