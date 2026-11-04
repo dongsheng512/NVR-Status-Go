@@ -100,43 +100,42 @@ cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 > 建议单独一个 commit 做，改动面大但机械；现有 `cancel_test.go`（4 设备并发取消）
 > 和 `soak_test.go` 正好可以验证没有回归。
 
-### 3.2 【高】xmlnode：用 Go 复刻 ElementTree
+### 3.2 【中】xmlnode：用 Go 复刻 ElementTree
 
 **现状**：包注释第一行就写着
 
 > It mirrors the parts of Python's ElementTree the original code relies on
 
 `Find(".//playbackURI")` 就是在 Go 里重新发明 ElementTree 的 XPath-lite。
-每次调用都要：`strings.Split` 路径 → 递归遍历整棵树 → 字符串比较节点名。
+每次调用都要：`strings.Split` 路径 → 遍历子树 → 字符串比较节点名。
 
-**热路径成本**：CMSearch 分页 40 条/页，每条取 `playbackURI`/`startTime`/`endTime` 三个字段
-（`itemKey`），一页就是 120 次全树查找；64 通道 × 2 页 ≈ 15k 次遍历。
+**实测成本**（`bench_test.go`，40 条 matchItem/页）：
 
-**Go 的三种更优写法**（按收益排序）：
+| 操作 | 优化前 | 优化后 |
+| --- | --- | --- |
+| `Parse`（每页一次） | 217 µs | ~160 µs |
+| `FindAll`（每页一次） | 952 ns | ~824 ns |
+| 逐条取 3 字段（每页 120 次） | 5.29 µs | 2.47 µs |
+| `Find` 首个命中 | 1.0 µs | 0.15 µs |
 
-1. **struct 映射**（适合固定响应）：
-   ```go
-   type matchItem struct {
-       PlaybackURI string `xml:"playbackURI"`
-       StartTime   string `xml:"startTime"`
-       EndTime     string `xml:"endTime"`
-   }
-   ```
-   编译期检查字段名，一次 `Unmarshal` 替代 N 次查找。代价：固件字段名变体多时容易失败。
+**原判断要修正**：查询不是瓶颈，`Parse` 才是（占 98%），而它的绝对值
+（160 µs × 128 页 ≈ 20 ms）对一次几十秒的巡检完全可忽略。所以 ——
 
-2. **流式解析**（适合大列表）：
-   `xml.Decoder` 读到 `<matchItem>` 就产出一条，内存 O(1) 而不是先建整棵树。
-   现在的实现是「全量 DOM → 再遍历」。
+- **不做 struct 映射 / 流式改造**。ISAPI 字段名在固件间有差异，改写要重跑全部
+  用例加真机验证，收益抵不上风险。若将来真需要提速，方向是流式解析
+  （边读边产出 matchItem，不建整棵树），而不是换查询方式。
+- **已做**：`Find` 命中即停（6.8×）、`FindAll`/`trimText` 改显式栈。
+  后者不是性能优化 —— 8 MiB 上限允许几十万层嵌套，递归版会吃掉几十 MB 栈；
+  栈溢出是 fatal error，`recover()` 接不住，进程直接退出而不是返回解析错误。
 
-3. **最小改动**：给 `Node` 建子节点索引 `map[string][]*Node`，`childrenNamed` 从 O(children) 降到 O(1)。
+**顺带修的一处**：
 
-**顺带修的两处**（都不是 bug，是脆弱写法）：
-
-- `xmlnode.go:42` `if err.Error() == "EOF"` → 应为 `errors.Is(err, io.EOF)`。
+- `xmlnode.go:42` `if err.Error() == "EOF"` → 已改 `errors.Is(err, io.EOF)`。
   字符串比较遇到包装错误会漏判。（实测 `encoding/xml` 对截断文档返回 `unexpected EOF`，
-  所以截断保护**目前是有效的** —— 依赖的是标准库而不是这行判断。）
-- `xmlnode.go:63` `Text += string(t)` 是 O(n²) 累积，应收集切片后一次 `Join`。
-  ISAPI 文本都很短，实际影响小。
+  所以截断保护**一直是有效的** —— 依赖的是标准库而不是这行判断。）
+
+**暂不处理**：`Text += string(t)` 理论上是 O(n²) 累积。ISAPI 响应里每个节点的
+CharData 基本只有一个片段，实测 `Parse` 已经很便宜，改它收益为零。
 
 ### 3.3 【中】`ParseChannelList(value any)`：鸭子类型渗进核心
 
@@ -244,7 +243,7 @@ error 在第一位。Go 惯例是最后一位，`if err != nil` 才读得顺。�
 | 1 | §3.5 删 `max`/`minInt`/`maxInt`、§3.6 删转发壳、§3.7 调返回值顺序 | 极低，纯机械 | 减少误读 |
 | 2 | §3.4 统一 `parsePercent` | 低，需补 health 侧「未知」测试 | 消除口径分叉 |
 | 3 | §3.3 收窄 `ParseChannelList` 类型 | 中，要改 config/CLI/GUI 三个入口 | 类型安全 |
-| 4 | §3.2 xmlnode 热路径（先做子节点索引，再评估 struct 映射） | 中，需真机验证固件变体 | CPU |
+| 4 | §3.2 xmlnode：`Find` 命中即停、遍历改显式栈、`errors.Is` | 低 | `Find` 6.8×，深文档不爆栈；**不做** struct 映射 |
 | 5 | §3.1 用 ctx 替换 `CheckCancel` 回调 + 删轮询 goroutine | **高**，跨 5 个包 | 架构最干净，取消即时 |
 
 批次 5 建议单独排，改完必须跑 `cancel_test.go` + 真机 Ctrl-C 验证（`pgrep -f ffmpeg` 为空）。

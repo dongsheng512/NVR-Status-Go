@@ -5,7 +5,9 @@ package xmlnode
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -39,7 +41,11 @@ func Parse(text string) (*Node, error) {
 	for {
 		tok, err := dec.Token()
 		if err != nil {
-			if err.Error() == "EOF" {
+			// errors.Is, not err.Error()=="EOF": a wrapped error would slip
+			// through the string comparison and be reported as a parse failure.
+			// A truncated document reports "unexpected EOF", not io.EOF, so it
+			// still falls through to the error return below.
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil, err
@@ -71,21 +77,64 @@ func Parse(text string) (*Node, error) {
 	return root, nil
 }
 
-func trimText(n *Node) {
-	n.Text = strings.TrimSpace(n.Text)
-	for _, c := range n.Children {
-		trimText(c)
+// trimText trims every node's text. Iterative for the same reason as
+// descendants: a deeply nested document must not consume the goroutine stack.
+func trimText(root *Node) {
+	stack := []*Node{root}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		cur.Text = strings.TrimSpace(cur.Text)
+		stack = append(stack, cur.Children...)
 	}
 }
 
 // Find returns the first node matching a path. Paths are "Tag" for a direct
 // child or ".//Tag" for any descendant; "A/B" walks direct children.
 func (n *Node) Find(path string) *Node {
-	all := n.FindAll(path)
-	if len(all) == 0 {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "." {
+		return n
+	}
+	if rest, ok := strings.CutPrefix(path, ".//"); ok {
+		parts := strings.Split(rest, "/")
+		if len(parts) == 1 {
+			// The common case (".//playbackURI"): stop at the first hit
+			// instead of collecting every match and taking index 0.
+			return n.firstDescendant(parts[0])
+		}
+		// ".//A/B" cannot be short-circuited to "first A, then B": if the first
+		// A has no B child, FindAll would fall through to the next A.
+		for _, a := range n.descendants(parts[0]) {
+			if hit := firstByPath(a, parts[1:]); hit != nil {
+				return hit
+			}
+		}
 		return nil
 	}
-	return all[0]
+	return firstByPath(n, strings.Split(path, "/"))
+}
+
+// firstByPath walks direct children along parts and returns the final node.
+func firstByPath(n *Node, parts []string) *Node {
+	cur := n
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		var next *Node
+		for _, c := range cur.Children {
+			if c.Name == part {
+				next = c
+				break
+			}
+		}
+		if next == nil {
+			return nil
+		}
+		cur = next
+	}
+	return cur
 }
 
 // FindAll returns every node matching a path.
@@ -94,8 +143,7 @@ func (n *Node) FindAll(path string) []*Node {
 	if path == "" || path == "." {
 		return []*Node{n}
 	}
-	if strings.HasPrefix(path, ".//") {
-		rest := strings.TrimPrefix(path, ".//")
+	if rest, ok := strings.CutPrefix(path, ".//"); ok {
 		parts := strings.Split(rest, "/")
 		cur := n.descendants(parts[0])
 		for _, part := range parts[1:] {
@@ -125,19 +173,49 @@ func (n *Node) FindText(path, def string) string {
 	return def
 }
 
+// descendants walks the subtree in document order.
+//
+// Iterative on purpose: maxXMLBytes (8 MiB) allows documents nested hundreds of
+// thousands of levels deep, and a recursive walk would overflow the goroutine
+// stack. Stack overflow is a fatal error — recover() cannot catch it, so the
+// whole process dies instead of returning a parse error.
 func (n *Node) descendants(name string) []*Node {
 	var out []*Node
-	var walk func(*Node)
-	walk = func(cur *Node) {
-		for _, c := range cur.Children {
-			if c.Name == name {
-				out = append(out, c)
-			}
-			walk(c)
+	stack := make([]*Node, 0, len(n.Children))
+	for i := len(n.Children) - 1; i >= 0; i-- {
+		stack = append(stack, n.Children[i])
+	}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if cur.Name == name {
+			out = append(out, cur)
+		}
+		for i := len(cur.Children) - 1; i >= 0; i-- {
+			stack = append(stack, cur.Children[i])
 		}
 	}
-	walk(n)
 	return out
+}
+
+// firstDescendant is descendants but returns the first hit in document order,
+// stopping the walk right there.
+func (n *Node) firstDescendant(name string) *Node {
+	stack := make([]*Node, 0, len(n.Children))
+	for i := len(n.Children) - 1; i >= 0; i-- {
+		stack = append(stack, n.Children[i])
+	}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if cur.Name == name {
+			return cur
+		}
+		for i := len(cur.Children) - 1; i >= 0; i-- {
+			stack = append(stack, cur.Children[i])
+		}
+	}
+	return nil
 }
 
 func childrenNamed(parents []*Node, name string) []*Node {
