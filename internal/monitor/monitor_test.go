@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"nvrstatus/internal/model"
+	"nvrstatus/internal/util"
 )
 
 func sampleReports() []model.Report {
@@ -80,6 +81,8 @@ func TestMetricsUnknownDiskUsage(t *testing.T) {
 	}
 }
 
+// parsePercent 的实现已收敛到 util（原先 monitor 与 health 各有一份，语义还不同），
+// 用例随之迁到 util_test.go 的 TestParsePercent。
 func TestParsePercent(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -94,9 +97,9 @@ func TestParsePercent(t *testing.T) {
 		{"-", 0, false},
 	}
 	for _, tc := range cases {
-		got, ok := parsePercent(tc.in)
+		got, ok := util.ParsePercent(tc.in)
 		if got != tc.want || ok != tc.ok {
-			t.Errorf("parsePercent(%q) = (%v, %v), 期望 (%v, %v)", tc.in, got, ok, tc.want, tc.ok)
+			t.Errorf("ParsePercent(%q) = (%v, %v), 期望 (%v, %v)", tc.in, got, ok, tc.want, tc.ok)
 		}
 	}
 }

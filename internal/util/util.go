@@ -98,6 +98,26 @@ func ToFloat(v string, def float64) float64 {
 	return f
 }
 
+// ParsePercent parses device-reported percentages such as "98.0%" or "53%".
+//
+// The bool says whether the text actually was a number. Callers must not treat
+// a failed parse as 0: a disk whose usage cannot be read is unknown, not empty.
+// Only a trailing "%" is stripped — a stray "%" in the middle means the value is
+// malformed, and silently deleting it would turn garbage into a plausible
+// number. (health and monitor each had their own copy of this, with different
+// semantics; this is the single definition.)
+func ParsePercent(s string) (float64, bool) {
+	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "%"))
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
 var channelSplit = regexp.MustCompile(`[,，、;；\s]+`)
 
 // ParseChannelList parses a channel filter. nil/empty means no filter.

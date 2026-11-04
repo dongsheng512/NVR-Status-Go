@@ -5,12 +5,12 @@ package monitor
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"nvrstatus/internal/model"
+	"nvrstatus/internal/util"
 )
 
 // Snapshot is a consistent view of the latest scan.
@@ -113,7 +113,7 @@ func (s Snapshot) Metrics() string {
 	var unknown strings.Builder
 	for _, r := range s.Reports {
 		for _, d := range r.Drives {
-			pct, ok := parsePercent(d.Usage)
+			pct, ok := util.ParsePercent(d.Usage)
 			if !ok {
 				// Never report an unparsable usage as 0%: that reads as "empty
 				// disk". Expose it as an explicit unknown instead.
@@ -164,20 +164,6 @@ func label(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
-}
-
-// parsePercent returns the numeric value of strings like "98.0%" and whether
-// the string was actually a number.
-func parsePercent(s string) (float64, bool) {
-	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "%"))
-	if s == "" {
-		return 0, false
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0, false
-	}
-	return v, true
 }
 
 // SortedReports returns reports sorted by device name for stable output.

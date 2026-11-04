@@ -8,11 +8,11 @@ package health
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode"
 
 	"nvrstatus/internal/model"
+	"nvrstatus/internal/util"
 )
 
 // Health verdict strings. Severity order: 良好 < 警告 < 严重.
@@ -132,18 +132,6 @@ func severityRank(level string) int {
 	}
 }
 
-func parsePercent(s string) float64 {
-	s = strings.TrimSpace(strings.ReplaceAll(s, "%", ""))
-	if s == "" {
-		return 0
-	}
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0
-	}
-	return f
-}
-
 // driveStatusBad reports a drive status that is neither missing/unknown nor a
 // known healthy value. Status matching is case-insensitive.
 func driveStatusBad(status string) bool {
@@ -193,7 +181,7 @@ func Summarize(cameras []model.Camera, records []model.Record, drives []model.Dr
 		if driveStatusBad(d.Status) {
 			badDrives++
 		}
-		if parsePercent(d.Usage) >= fullDriveUsagePct {
+		if pct, ok := util.ParsePercent(d.Usage); ok && pct >= fullDriveUsagePct {
 			fullDrives++
 		}
 		switch strings.ToLower(strings.TrimSpace(d.Status)) {

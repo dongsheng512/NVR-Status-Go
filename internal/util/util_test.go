@@ -190,3 +190,28 @@ func TestSafeFilename(t *testing.T) {
 		t.Fatalf("long: %q", long)
 	}
 }
+
+func TestParsePercent(t *testing.T) {
+	cases := []struct {
+		in   string
+		want float64
+		ok   bool
+	}{
+		{"98.0%", 98, true},
+		{"53%", 53, true},
+		{" 45 % ", 45, true},
+		{"0", 0, true},
+		{"  ", 0, false},
+		{"", 0, false},
+		{"未知", 0, false},
+		{"-", 0, false},
+		// 中间的 % 说明文本本身是坏的；删掉它会变成看似合理的数字
+		{"9%8", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := ParsePercent(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("ParsePercent(%q) = (%v, %v), 期望 (%v, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
