@@ -165,7 +165,16 @@ func (c *Client) currentContext() context.Context {
 	return ctx
 }
 
+// Context returns the cancellation context installed by SetContext.
+//
+// Layers above the client (recording, storage, avprobe) need the context itself
+// rather than a poll predicate: exec.CommandContext and
+// http.Request.WithContext react the instant it is cancelled, with no polling
+// interval and no extra goroutine.
+func (c *Client) Context() context.Context { return c.currentContext() }
+
 // CheckCancel reports whether the configured context has been cancelled.
+// Kept for the request path, which only needs a yes/no.
 func (c *Client) CheckCancel() error {
 	return util.CheckCancel(c.currentContext())
 }

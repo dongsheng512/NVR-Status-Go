@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -12,7 +13,7 @@ type fakeFetcher struct {
 }
 
 func (f *fakeFetcher) Get(endpoint string) (string, error) { return f.get[endpoint], nil }
-func (f *fakeFetcher) CheckCancel() error                  { return nil }
+func (f *fakeFetcher) Context() context.Context            { return context.Background() }
 
 const storageXML = `<Storage>
  <hdd>

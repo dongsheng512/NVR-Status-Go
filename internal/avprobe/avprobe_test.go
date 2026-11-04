@@ -1,6 +1,7 @@
 package avprobe
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -730,13 +731,9 @@ func TestRetryStillFailingAnnotates(t *testing.T) {
 func TestRunCancellationKillsProcessAndReturnsErrCancelled(t *testing.T) {
 	svc, tools, _ := newTestService(t)
 	t.Setenv("FAKE_SLEEP", "30")
-	var cancelled atomic.Bool
-	svc.CheckCancel = func() error {
-		if cancelled.Load() {
-			return util.ErrCancelled
-		}
-		return nil
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc.Ctx = ctx
 	recs := []model.Record{makeRecord("101", "1", "cam101", boolPtr(true), true, "")}
 	done := make(chan error, 1)
 	go func() { done <- svc.Run(recs) }()
@@ -752,7 +749,7 @@ func TestRunCancellationKillsProcessAndReturnsErrCancelled(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	cancelled.Store(true)
+	cancel()
 	select {
 	case err := <-done:
 		if err != util.ErrCancelled {

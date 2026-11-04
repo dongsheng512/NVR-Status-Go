@@ -490,7 +490,7 @@ func (a *App) startScan() {
 			}
 		}
 		onNVR := func(n *scan.NVR) {
-			n.Client.SetContext(ctx)
+			n.SetContext(ctx)
 			a.post(func() { a.currentNVR = n })
 		}
 		if len(devices) == 1 {
@@ -667,7 +667,7 @@ func (a *App) runSingleCheck() {
 			})
 		}
 		onNVR := func(n *scan.NVR) {
-			n.Client.SetContext(ctx)
+			n.SetContext(ctx)
 			a.post(func() { a.currentNVR = n })
 		}
 		updated, err := a.runner.RunSingleAVWith(recs, dev, opts, progress, onNVR)

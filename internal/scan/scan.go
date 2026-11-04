@@ -55,6 +55,19 @@ type NVR struct {
 	AV        *avprobe.Service
 }
 
+// SetContext installs ctx on every layer that can block: the ISAPI client
+// (HTTP requests and its parse cache) and the AV probe (ffmpeg children).
+//
+// It is a single entry point on purpose. Installing ctx on the client alone is
+// not enough — ffmpeg would keep running after the user hits cancel — and
+// making each caller remember both layers is exactly how that gets missed.
+func (n *NVR) SetContext(ctx context.Context) {
+	n.Client.SetContext(ctx)
+	if n.AV != nil {
+		n.AV.Ctx = ctx
+	}
+}
+
 // Build constructs an NVR from a device and scan options, applying the same
 // ffmpeg degradation and lookback expansion as the Python version.
 func (r *Runner) Build(device model.Device, opt model.ScanOptions) *NVR {
@@ -170,8 +183,10 @@ func (r *Runner) Build(device model.Device, opt model.ScanOptions) *NVR {
 		Username:   device.Username,
 		Password:   device.Password,
 		// Location is resolved lazily in NVR.Run: Build must not touch the network.
-		Log:         logf,
-		CheckCancel: client.CheckCancel,
+		Log: logf,
+		// Ctx is left nil here on purpose: the caller installs it after Build via
+		// NVR.SetContext. Snapshotting client.Context() at Build time would
+		// capture a background context, because SetContext runs afterwards.
 	}
 
 	rec.DeepCheck = av.Run
@@ -299,13 +314,13 @@ func (r *Runner) RunCtx(ctx context.Context, device model.Device, opt model.Scan
 }
 
 // bindContext returns the onNVR hook that installs ctx on the freshly built
-// client. Build happens before the hook runs, so every request in NVR.Run —
-// including the recording and ffmpeg layers that borrow CheckCancel — sees it.
+// NVR. Build happens before the hook runs, which is why Build cannot set the
+// context itself.
 func bindContext(ctx context.Context) func(*NVR) {
 	if ctx == nil {
 		return nil
 	}
-	return func(n *NVR) { n.Client.SetContext(ctx) }
+	return func(n *NVR) { n.SetContext(ctx) }
 }
 
 // queueConcurrent runs up to workers devices at once. Progress is aggregated

@@ -23,7 +23,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"nvrstatus/internal/limit"
@@ -68,10 +67,13 @@ type Service struct {
 	// service's device timezone, then to time.Local.
 	Location *time.Location
 
-	Progress    func(model.Progress)
-	Log         func(string)
-	CheckCancel func() error
-	Now         func() time.Time
+	Progress func(model.Progress)
+	Log      func(string)
+	// Ctx cancels the run and every child process it spawns. nil means
+	// "never cancelled". This is the context itself, not a poll predicate:
+	// exec.CommandContext reacts the moment it is done.
+	Ctx context.Context
+	Now func() time.Time
 
 	saveMu  sync.Mutex
 	saveDir string
@@ -108,14 +110,16 @@ func (s *Service) progress(msg string, current, total int, phase string, overall
 	}
 }
 
+// ctx returns the cancellation context, never nil.
+func (s *Service) ctx() context.Context {
+	if s.Ctx == nil {
+		return context.Background()
+	}
+	return s.Ctx
+}
+
 func (s *Service) checkCancel() error {
-	if s.CheckCancel == nil {
-		return nil
-	}
-	if err := s.CheckCancel(); err != nil {
-		return util.ErrCancelled
-	}
-	return nil
+	return util.CheckCancel(s.ctx())
 }
 
 func (s *Service) avSeconds() int {
@@ -686,9 +690,9 @@ type commandResult struct {
 	ExitCode int
 }
 
-// runCommand executes a child process and kills it as soon as CheckCancel
-// asks for cancellation. Non-zero exit codes are data, not errors (ffmpeg uses
-// them routinely); launch failures and timeouts are returned as errors.
+// runCommand executes a child process and kills it as soon as the run context
+// is done. Non-zero exit codes are data, not errors (ffmpeg uses them
+// routinely); launch failures and timeouts are returned as errors.
 func (s *Service) runCommand(args []string, timeout time.Duration) (*commandResult, error) {
 	if len(args) == 0 {
 		return nil, errors.New("empty command")
@@ -696,8 +700,16 @@ func (s *Service) runCommand(args []string, timeout time.Duration) (*commandResu
 	if err := s.checkCancel(); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+
+	// Derive from the run context so cancellation reaches exec.CommandContext
+	// directly. The Python original had to poll subprocess.poll() every 0.25s
+	// because Popen.wait() cannot be interrupted; Go does not.
+	ctx := s.ctx()
+	if timeout > 0 {
+		var cancelTimeout context.CancelFunc
+		ctx, cancelTimeout = context.WithTimeout(ctx, timeout)
+		defer cancelTimeout()
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
@@ -705,41 +717,15 @@ func (s *Service) runCommand(args []string, timeout time.Duration) (*commandResu
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = 1 * time.Second
 
-	stopPoll := make(chan struct{})
-	var cancelRequested atomic.Bool
-	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stopPoll:
-				return
-			case <-ticker.C:
-				if s.checkCancel() != nil {
-					cancelRequested.Store(true)
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-
-	var timer *time.Timer
-	if timeout > 0 {
-		timer = time.AfterFunc(timeout, cancel)
-	}
 	runErr := cmd.Run()
-	if timer != nil {
-		timer.Stop()
-	}
-	close(stopPoll)
 
 	res := &commandResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: -1}
 	if cmd.ProcessState != nil {
 		res.ExitCode = cmd.ProcessState.ExitCode()
 	}
 	if ctx.Err() != nil {
-		if cancelRequested.Load() || s.checkCancel() != nil {
+		// An aborted run must not be reported as "this clip timed out".
+		if s.checkCancel() != nil {
 			return res, util.ErrCancelled
 		}
 		return res, errCommandTimeout

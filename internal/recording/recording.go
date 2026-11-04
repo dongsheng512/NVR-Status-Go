@@ -3,6 +3,7 @@
 package recording
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"html"
@@ -23,7 +24,7 @@ type Fetcher interface {
 	Post(endpoint, body string) (string, error)
 	DeviceLocation() *time.Location
 	Cameras() ([]model.Camera, error)
-	CheckCancel() error
+	Context() context.Context
 }
 
 // SearchResult is the outcome of one CMSearch lookback.
@@ -58,6 +59,10 @@ type Service struct {
 	// an import cycle. It performs the deep audio/video checks in place.
 	DeepCheck func([]model.Record) error
 }
+
+// CheckCancel reports whether the caller cancelled the run. The context lives
+// on the client (installed by scan.Build); this package only borrows it.
+func (s *Service) CheckCancel() error { return util.CheckCancel(s.F.Context()) }
 
 var recMode = map[string]string{
 	"CMR": "连续录像",
@@ -243,7 +248,7 @@ func (s *Service) RecordingStatus() ([]model.Record, error) {
 			go func() {
 				defer wg.Done()
 				for j := range jobs {
-					if err := s.F.CheckCancel(); err != nil {
+					if err := s.CheckCancel(); err != nil {
 						mu.Lock()
 						cancelErr = err
 						mu.Unlock()
@@ -256,7 +261,7 @@ func (s *Service) RecordingStatus() ([]model.Record, error) {
 		go func() {
 			defer close(jobs)
 			for n, idx := range toSearch {
-				if err := s.F.CheckCancel(); err != nil {
+				if err := s.CheckCancel(); err != nil {
 					mu.Lock()
 					cancelErr = err
 					mu.Unlock()

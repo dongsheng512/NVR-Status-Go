@@ -3,6 +3,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -15,7 +16,7 @@ import (
 // Fetcher is the narrow slice of the ISAPI client this package needs.
 type Fetcher interface {
 	Get(endpoint string) (string, error)
-	CheckCancel() error
+	Context() context.Context
 }
 
 // Service reads storage status.
@@ -23,6 +24,9 @@ type Service struct {
 	F   Fetcher
 	Log func(string)
 }
+
+// CheckCancel reports whether the caller cancelled the run.
+func (s *Service) CheckCancel() error { return util.CheckCancel(s.F.Context()) }
 
 // quietGetter is implemented by isapi.Client. Capability probes use it so a
 // firmware that answers 403 to unsupported endpoints does not fill the scan
@@ -113,7 +117,7 @@ func (s *Service) DiskOverwriteStatus(drives []model.Drive) model.DiskOverwrite 
 		"/ContentMgmt/Storage/advanced",
 	}
 	for _, ep := range endpoints {
-		if err := s.F.CheckCancel(); err != nil {
+		if err := s.CheckCancel(); err != nil {
 			break
 		}
 		text, err := s.getQuiet(ep)

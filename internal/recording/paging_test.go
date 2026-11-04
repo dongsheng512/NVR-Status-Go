@@ -7,6 +7,7 @@ package recording
 // 误判为「无录像」，属于会影响健康结论的静默缺陷。
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -55,7 +56,7 @@ func (f *pagingFetcher) Post(endpoint, body string) (string, error) {
 
 func (f *pagingFetcher) DeviceLocation() *time.Location   { return time.UTC }
 func (f *pagingFetcher) Cameras() ([]model.Camera, error) { return nil, nil }
-func (f *pagingFetcher) CheckCancel() error               { return nil }
+func (f *pagingFetcher) Context() context.Context         { return context.Background() }
 
 // parsePosition 提取 <searchResultPostion>N</searchResultPostion>（设备端拼写如此）。
 func parsePosition(body string) int {

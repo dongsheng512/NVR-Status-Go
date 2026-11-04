@@ -1,6 +1,7 @@
 package recording
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func (f *fakeFetcher) Post(endpoint, body string) (string, error) {
 }
 func (f *fakeFetcher) DeviceLocation() *time.Location   { return f.loc }
 func (f *fakeFetcher) Cameras() ([]model.Camera, error) { return f.cameras, nil }
-func (f *fakeFetcher) CheckCancel() error               { return nil }
+func (f *fakeFetcher) Context() context.Context         { return context.Background() }
 
 func TestPhysicalChannel(t *testing.T) {
 	cases := []struct{ xml, want string }{
