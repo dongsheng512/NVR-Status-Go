@@ -306,16 +306,6 @@ func (s *Service) RecordingStatus() ([]model.Record, error) {
 	return records, nil
 }
 
-// JudgeRecordingOK combines plan + disk + deep probe into the row verdict.
-func JudgeRecordingOK(r *model.Record) string { return judgeRecordingOK(r) }
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func mergePhysical(records []model.Record) ([]model.Record, int) {
 	merged := map[string]model.Record{}
 	var order []string
@@ -362,7 +352,7 @@ func (s *Service) SearchTrackRecent(trackID string) SearchResult {
 	start := now.Add(-time.Duration(s.LookbackMinutes) * time.Minute)
 	end := now.Add(5 * time.Minute)
 
-	codeErr, matches := s.cmsearchCollect(trackID, start, end)
+	matches, codeErr := s.cmsearchCollect(trackID, start, end)
 	if codeErr != nil {
 		empty.Detail = "检索失败"
 		return empty
@@ -375,7 +365,7 @@ func (s *Service) SearchTrackRecent(trackID string) SearchResult {
 
 	covers, latest, uri, segS, segE := pickMatches(matches, now, devLoc, lagGrace)
 	if !covers && s.LookbackMinutes > 90 {
-		_, recent := s.cmsearchCollect(trackID, now.Add(-90*time.Minute), end)
+		recent, _ := s.cmsearchCollect(trackID, now.Add(-90*time.Minute), end)
 		if len(recent) > 0 {
 			seen := map[string]bool{}
 			for _, m := range matches {
@@ -490,13 +480,13 @@ func (s *Service) cmsearchPage(trackID string, start, end time.Time, maxResults,
 	return 200, matches, total, nil
 }
 
-func (s *Service) cmsearchCollect(trackID string, start, end time.Time) (error, []*xmlnode.Node) {
+func (s *Service) cmsearchCollect(trackID string, start, end time.Time) ([]*xmlnode.Node, error) {
 	_, matches, total, err := s.cmsearchPage(trackID, start, end, cmsearchPage, 0)
 	if err != nil {
-		return err, nil
+		return nil, err
 	}
 	if total <= len(matches) || total <= cmsearchPage {
-		return nil, matches
+		return matches, nil
 	}
 	lastPos := total - cmsearchPage
 	if lastPos < 0 {
@@ -504,7 +494,7 @@ func (s *Service) cmsearchCollect(trackID string, start, end time.Time) (error, 
 	}
 	_, more, _, err := s.cmsearchPage(trackID, start, end, cmsearchPage, lastPos)
 	if err != nil || len(more) == 0 {
-		return nil, matches
+		return matches, nil
 	}
 	seen := map[string]bool{}
 	var merged []*xmlnode.Node
@@ -516,7 +506,7 @@ func (s *Service) cmsearchCollect(trackID string, start, end time.Time) (error, 
 		seen[k] = true
 		merged = append(merged, item)
 	}
-	return nil, merged
+	return merged, nil
 }
 
 func itemKey(n *xmlnode.Node) string {
@@ -684,7 +674,7 @@ func (s *Service) PickRetryClipTimes(seconds int, avoidS, avoidE time.Time) (tim
 func (s *Service) SearchTrackInRange(trackID string, start, end time.Time) SearchResult {
 	qStart := start.Add(-5 * time.Minute)
 	qEnd := end.Add(5 * time.Minute)
-	_, matches := s.cmsearchCollect(trackID, qStart, qEnd)
+	matches, _ := s.cmsearchCollect(trackID, qStart, qEnd)
 	if len(matches) == 0 {
 		return SearchResult{Detail: "繁忙时段无录像片段"}
 	}
@@ -719,6 +709,7 @@ func (s *Service) SearchTrackInRange(trackID string, start, end time.Time) Searc
 	return SearchResult{OK: true, Detail: "ok", PlaybackURI: bestURI, SegStart: bestS, SegEnd: bestE}
 }
 
+// judgeRecordingOK combines plan + disk + deep probe into the row verdict.
 func judgeRecordingOK(r *model.Record) string {
 	if r.RecordingEnabled == nil || !*r.RecordingEnabled {
 		return "未配置"

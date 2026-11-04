@@ -208,20 +208,6 @@ func fileSize(path string) int64 {
 	return st.Size()
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func minTime(a, b time.Time) time.Time {
 	if a.Before(b) {
 		return a
@@ -349,12 +335,6 @@ func swapRTSPPort(uri string, port int) (string, bool) {
 
 // fmtRTSPTime formats a time as the device local wall clock, still using the Z
 // suffix (common Chinese NVR firmware behaviour).
-// swapRTSPPort is the method form of swapRTSPPort, kept for symmetry with the
-// Python AVProbeMixin.
-func (s *Service) swapRTSPPort(uri string, port int) (string, bool) {
-	return swapRTSPPort(uri, port)
-}
-
 func (s *Service) fmtRTSPTime(dt time.Time) string {
 	return dt.In(s.location()).Format("20060102T150405") + "Z"
 }
@@ -407,7 +387,7 @@ func (s *Service) detectRTSPTimeMode(uriStartRaw string, segStart *time.Time) st
 func (s *Service) computeClipWindow(uriS, uriE time.Time, seconds int, clipStart, clipEnd *time.Time) (time.Time, time.Time) {
 	now := s.now().UTC()
 	cutoff := util.LatestAVSampleInstant(now)
-	sec := maxInt(1, seconds)
+	sec := max(1, seconds)
 
 	uriS, uriE = uriS.UTC(), uriE.UTC()
 	hardE := minTime(uriE, cutoff)
@@ -426,7 +406,7 @@ func (s *Service) computeClipWindow(uriS, uriE time.Time, seconds int, clipStart
 				clipE = minTime(hardE, uriS.Add(time.Duration(sec)*time.Second))
 			}
 		}
-		if clipE.Sub(clipS) < time.Duration(maxInt(1, sec/2))*time.Second {
+		if clipE.Sub(clipS) < time.Duration(max(1, sec/2))*time.Second {
 			clipE = minTime(hardE, clipS.Add(time.Duration(sec)*time.Second))
 		}
 	} else {
@@ -550,7 +530,7 @@ func (s *Service) buildShortRTSPCandidates(playbackURI string, segStart, segEnd 
 		uriS = uriE.Add(-5 * time.Minute)
 	}
 	if !uriE.After(uriS) {
-		uriE = uriS.Add(time.Duration(maxInt(1, seconds)) * time.Second)
+		uriE = uriS.Add(time.Duration(max(1, seconds)) * time.Second)
 	}
 	clipS, clipE := s.computeClipWindow(uriS, uriE, seconds, clipStart, clipEnd)
 
@@ -954,7 +934,7 @@ func severityOf(status string) int {
 }
 
 func avSeverity(video, audio string) int {
-	return maxInt(severityOf(video), severityOf(audio))
+	return max(severityOf(video), severityOf(audio))
 }
 
 func avNeedsRetry(video, audio, detail string) bool {
@@ -995,7 +975,7 @@ func asRank(video, audio string) [2]int {
 
 // probeAudioTrack pulls the audio track separately and runs volumedetect.
 func (s *Service) probeAudioTrack(ffmpeg, ffprobe string, candidates []candidate, expectAudio *bool) (*audioProbeResult, error) {
-	audioSeconds := maxInt(3, minInt(s.avSeconds(), 4))
+	audioSeconds := max(3, min(s.avSeconds(), 4))
 	tmp, err := os.CreateTemp("", "nvr_a_*.mkv")
 	if err != nil {
 		return &audioProbeResult{Probe: model.StatusUnknown, Note: "音频抽检异常: " + truncateRunes(maskCredentials(err.Error()), 80)}, nil
@@ -1455,7 +1435,7 @@ func (s *Service) runAVJobs(records []model.Record, indexes []int, clipS, clipE 
 		done++
 		frac := float64(done) / float64(total)
 		overall := progressLo + (progressHi-progressLo)*frac
-		if done == 1 || done == total || done%maxInt(1, total/20) == 0 {
+		if done == 1 || done == total || done%max(1, total/20) == 0 {
 			s.progress(fmt.Sprintf("%s %d/%d", progressText, done, total), done, total, "av", overall)
 		}
 	}
