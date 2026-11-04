@@ -17,3 +17,6 @@ dist/
 # 打包产物
 *.dmg
 *.app/
+
+# 捆绑进 .app 的 ffmpeg（本机生成，见 scripts/bundle-ffmpeg.py）
+resources/*/bin/

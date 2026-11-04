@@ -44,6 +44,7 @@ make test            # go test ./...
 make vet             # go vet ./...
 
 make cli             # → build/nvr  与 GUI 同步维护，不进发布包
+make app             # → .app + .dmg（自带 ffmpeg，见下）
 ```
 
 > MyGo 要求 Go 1.27+。若 `go env GOMODCACHE` 不可写（沙箱环境），使用
@@ -52,14 +53,34 @@ make cli             # → build/nvr  与 GUI 同步维护，不进发布包
 ### MyGo 打包
 
 ```bash
-go tool mygo build
+make app                  # 先捆 ffmpeg，再打包
 # 产出 build/darwin-arm64/NVR Status.app
 #      build/darwin-arm64/NVR Status 3.0.0 arm64.dmg
+
+go tool mygo build        # 不捆 ffmpeg 的裸包，仅供快速迭代
 ```
 
 `mygo.json` 的 `main` 指向 `./cmd/nvr-gui`。**应用包与 dmg 里只有 GUI**——命令行巡检
 （`cmd/nvr`）和 Agent（`cmd/nvr-agent`）都不会被打进去。Windows/Linux 产物用
 `go tool mygo build -platform windows/amd64,linux/amd64`（需对应平台打包工具）。
+
+#### ffmpeg 捆绑（`make app` 的第一步）
+
+`.app` 被 Finder 或 `open` 启动时继承的是 **launchd** 的 PATH
+（`/usr/bin:/bin:/usr/sbin:/sbin`），**不含 `/opt/homebrew/bin`**。而 `util.ToolBinDirs`
+只查 bundle 内 `bin/` 与 PATH 两处，所以不捆 ffmpeg 的包在从图标启动时会把深度抽检
+静默降级成「ffmpeg 缺失」。`make app` 用 `scripts/bundle-ffmpeg.py` 解决这个问题：
+
+- `resources/darwin/bin/` → MyGo 复制到 `Contents/Resources/bin/`，正是
+  `ToolBinDirs` 的第一个查找位置（平台目录写法让 Windows/Linux 产物不带 mac 库）
+- Homebrew 的 `ffmpeg` 只有 420K，真正的体量在 19 个 dylib 里，且按绝对路径引用
+  `/opt/homebrew/...`。脚本把整个依赖闭包一起复制，用 `install_name_tool` 改写成
+  `@loader_path/`，再逐个 ad-hoc 重签（改 load command 会让签名失效，arm64 拒绝加载）
+- 脚本自我校验：任何文件残留绝对路径就报错退出，并把两个二进制真跑一次 `-version`
+- 产物在 `.gitignore` 里，不进仓库；换了 ffmpeg 版本重跑 `make ffmpeg`
+
+代价是 `.app` 从 11.6 MB 涨到 49.4 MB（dmg 16.1 MB）。注意本机 Homebrew 的 ffmpeg 是
+`--enable-gpl` 构建，对外分发要遵守 GPL。
 
 ## 与 Python v2.3.0 的关系 / 迁移说明
 
@@ -93,7 +114,7 @@ python3 scripts/check-secrets.py --all   # 也可手动全树自检
 | M5 健康判定 + 编排 + CLI | ✅ 完成（CLI 与 GUI 同步维护，不进发布包） |
 | M6 GUI MVP | ✅ 扫描接入、档案/设备表单、通道表 |
 | M7 GUI 功能对等 | ✅ 代码完成（待三平台人工验收） |
-| M8 测试迁移 + 多平台发布 | ⬜ 待做：~200 个业务用例迁移、真机 A/B 逐字段对照、三平台产物、签名/公证、ffmpeg 捆绑 |
+| M8 测试迁移 + 多平台发布 | 🟡 进行中：~200 个业务用例迁移、真机 A/B 逐字段对照、三平台产物、签名/公证待做；**macOS 的 ffmpeg 捆绑已完成**（`make app`） |
 
 ```bash
 # 在仓库根目录
@@ -101,7 +122,8 @@ go test ./...          # 全部通过（含伪 ISAPI 端到端、伪 ffmpeg）
 make gui               # → build/nvr-gui（发布产物）
 ```
 
-> 已知发布门禁未过：当前 `.app` 为 ad-hoc 签名、未捆绑 ffmpeg；换机器需先安装 ffmpeg 才能做深度抽检。
+> 已知发布门禁未过：`.app` 仍是 ad-hoc 签名、未公证。ffmpeg 已随包捆绑（`make app`），
+> 从 Finder/`open` 启动也能做深度抽检，不再依赖目标机器装没装 ffmpeg。
 
 ## 2026-10-28 UI 修复记录
 
