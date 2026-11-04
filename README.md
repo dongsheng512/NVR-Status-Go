@@ -10,7 +10,7 @@
 ## 目录
 
 ```
-cmd/nvr/            命令行巡检（**仅内部排障/验收，不随发布**）
+cmd/nvr/            命令行巡检（与 GUI 同步维护，**不进发布包**）
 cmd/nvr-gui/        GUI 入口
 cmd/nvr-agent/      无 GUI 的常驻巡检 Agent
 internal/model/     领域模型（设备 / 相机 / 通道记录 / 结果）
@@ -43,7 +43,7 @@ make build           # gui + agent
 make test            # go test ./...
 make vet             # go vet ./...
 
-make cli             # → build/nvr  仅排障/验收用，不随发布
+make cli             # → build/nvr  与 GUI 同步维护，不进发布包
 ```
 
 > MyGo 要求 Go 1.27+。若 `go env GOMODCACHE` 不可写（沙箱环境），使用
@@ -90,7 +90,7 @@ python3 scripts/check-secrets.py --all   # 也可手动全树自检
 | M2 ISAPI 客户端（Digest/XML/缓存） | ✅ 完成 |
 | M3 存储与录像（CMSearch） | ✅ 完成 |
 | M4 深度抽检（ffmpeg/RTSP） | ✅ 完成 |
-| M5 健康判定 + 编排 + CLI | ✅ 完成（CLI 现降级为内部排障工具） |
+| M5 健康判定 + 编排 + CLI | ✅ 完成（CLI 与 GUI 同步维护，不进发布包） |
 | M6 GUI MVP | ✅ 扫描接入、档案/设备表单、通道表 |
 | M7 GUI 功能对等 | ✅ 代码完成（待三平台人工验收） |
 | M8 测试迁移 + 多平台发布 | ⬜ 待做：~200 个业务用例迁移、真机 A/B 逐字段对照、三平台产物、签名/公证、ffmpeg 捆绑 |
@@ -153,12 +153,17 @@ go build -o build/nvr-agent ./cmd/nvr-agent
 
 > 磁盘使用率无法解析时不会退化成 `0%`（那会被读成"空盘"），而是单独输出 `nvr_disk_usage_unknown{...} 1`。
 
-## 命令行巡检（仅内部排障 / 验收，不随发布）
+## 命令行巡检（与 GUI 同步维护，不进发布包）
 
-GUI 是唯一发布形态；`cmd/nvr` 保留下来只做两件事，**面向用户的功能开发只改 GUI**：
+**交付形态只有 GUI**：`.app` / `.dmg` 里只装 `nvr-gui`，不打包命令行巡检。
+但 `cmd/nvr` **会跟着一起更新**，不是一次性遗留物 —— 新功能仍以 GUI 为第一入口，CLI 同步跟上。
+
+它有三条 GUI 替代不了的路径：
 
 1. **真机排障**：SSH 到现场机器上直接打一轮，把 stderr 日志和文本报告贴出来，比让人截图快得多。
 2. **M8 逐字段 A/B 对照**：Python v2.3.0 与 Go 版的输出都是稳定文本，可以直接 `diff`；GUI 只能肉眼比。
+3. **定点抽检**：`--av-channels` 按物理通道号筛、`--av-at` 指定具体时刻，这两项目前只在 CLI 上有
+   （GUI 未暴露；`cmd/nvr` 因此比 GUI 多出两种抽检能力，不是功能子集）。
 
 ```bash
 make cli                       # → build/nvr
@@ -169,7 +174,21 @@ make cli                       # → build/nvr
 ```
 
 - 退出码：`0` 正常、`1` 有设备失败、`2` 无失败但存在「严重」；`Ctrl-C`/`SIGTERM` 返回 `130`/`143`。
-- 参数全集与 Python 版一致，见 `./build/nvr --help`。
+- 参数全集见 `./build/nvr --help`。
 
-> 它只是 `internal/scan` 的一层薄封装，业务逻辑改动（健康判定、抽检、CMSearch）不需要动它；
-> 因此「保留」几乎不增加维护成本，但**不要把它当作对外交付物**。
+### 两侧不漏同步的保障
+
+CLI 只是 `internal/scan` 的一层薄封装：健康判定、抽检、CMSearch 这些改动都在 `internal/` 下，
+**CLI 自动继承，不用动它**。真正会漂移的只有一处 —— `model.ScanOptions` 新增字段时，
+GUI 表单接了、CLI 忘了加开关。这条用测试卡住，不靠记忆：
+
+| 测试 | 拦住什么 |
+| --- | --- |
+| `TestEveryScanOptionHasACLIFlagOrIsExempt` | 新增 `ScanOptions` 字段却没加 CLI 开关（或没在 `cliExempt` 写明原因）；豁免条目过期也会报错 |
+| `TestEveryScanOptionFlagReachesOptions` | 开关加了、但 `buildOptions` 里漏了赋值 —— 参数传了不生效 |
+| `TestReleaseBuildDoesNotIncludeCLI` | `make build` 被改成依赖 `cli`，发布构建连带产出 CLI |
+| `TestOnlyCLITargetBuildsTheCLIBinary` | 除 `cli` 外还有别的目标引用 `build/nvr` —— 被打进 `.app` 的前兆 |
+
+加字段时不用记规则，跑一次 `go test ./cmd/nvr/` 就会告诉你缺哪一步。
+
+> 这四条都做过变异验证（故意改坏 → 确认测试变红 → 还原），不是「写了就算数」。

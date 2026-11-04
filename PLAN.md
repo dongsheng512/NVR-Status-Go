@@ -75,8 +75,10 @@ M8  测试迁移 + 真机回归 + 打包     2–3 周
 
 ## M5 健康判定 + 编排 + CLI（1.5 周）✅ 已完成
 
-> 2026-11-04 起：**交付形态只保留 GUI**，`cmd/nvr` 降级为内部排障/验收工具（不进发布产物）。
-> 后续功能开发仍以 GUI 为准，CLI 只是 `internal/scan` 的一层薄封装，业务改动不需要动它。
+> 2026-11-04 起：**交付形态只保留 GUI**（`.app`/`.dmg` 里只有 `nvr-gui`），但 `cmd/nvr` **与 GUI 同步维护**，
+> 不是废弃的遗留物 —— 它承载 GUI 没有的按通道/按时刻定点抽检，以及真机排障与 M8 的 A/B 对照。
+> 同步的兜底成本很低：CLI 只是 `internal/scan` 的一层薄封装，业务改动都在 `internal/` 下自动继承；
+> 唯一会漂移的是 `ScanOptions` 新增字段，已由 `cmd/nvr/parity_test.go` 与 `release_test.go` 卡住。
 
 - [x] `internal/health`：`chanDetectResult` 白名单、双「未知」口径、严重度聚合（84 个子用例）
 - [x] `internal/scan`：`Build`（选项 → NVR）、`Run`（编排+进度）、`Queue`（多设备）、`RunSingleAV`

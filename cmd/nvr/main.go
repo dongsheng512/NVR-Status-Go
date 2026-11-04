@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -66,6 +67,16 @@ func parseArgs(argv []string) (*cliArgs, error) {
 		a.selector = argv[0]
 		argv = argv[1:]
 	}
+	fs := newFlagSet(a)
+	if err := fs.Parse(argv); err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+// newFlagSet registers every CLI flag. Split out from parseArgs so tests can
+// enumerate the flags and compare them with model.ScanOptions.
+func newFlagSet(a *cliArgs) *flag.FlagSet {
 	fs := flag.NewFlagSet("nvr", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&a.ip, "i", "", "NVR/DVR 的 IP 地址（单机直连时必填）")
@@ -99,10 +110,7 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	fs.StringVar(&a.configPath, "config", "", "指定 nvr_config.json（默认使用 profiles.json 当前档案）")
 	fs.StringVar(&a.profile, "profile", "", "指定 profiles.json 中的档案名")
 	fs.BoolVar(&a.showVer, "version", false, "显示版本")
-	if err := fs.Parse(argv); err != nil {
-		return nil, err
-	}
-	return a, nil
+	return fs
 }
 
 func run(argv []string) int {
@@ -115,47 +123,7 @@ func run(argv []string) int {
 		return 0
 	}
 
-	deep := a.deepAV || a.avSave
-	if a.avChannels != "" && !deep {
-		fmt.Println("警告: --av-channels 已忽略: 未启用深度抽检(需 --deep-av-check 或 --av-save)")
-		a.avChannels = ""
-	}
-	if a.avAt != "" && !deep {
-		fmt.Println("警告: --av-at 已忽略: 未启用深度抽检(需 --deep-av-check 或 --av-save)")
-		a.avAt = ""
-	}
-
-	opts := model.DefaultScanOptions()
-	opts.Lookback = a.lookback
-	opts.NoSearch = a.noSearch
-	opts.Workers = a.workers
-	opts.DeviceWorkers = a.deviceWorkers
-	opts.DeepAVCheck = deep
-	opts.AVSeconds = a.avSeconds
-	opts.AVWorkers = a.avWorkers
-	opts.AVLimit = a.avLimit
-	opts.SilenceDB = a.silenceDB
-	opts.BusyStart = a.busyStart
-	opts.BusyEnd = a.busyEnd
-	opts.BusyDaysAgo = a.busyDaysAgo
-	opts.AVSave = a.avSave
-	opts.AVSaveRoot = a.avSaveRoot
-	if a.avChannels != "" {
-		channels, err := util.ParseChannelList(a.avChannels)
-		if err != nil {
-			fmt.Printf("警告: 抽检通道过滤无效(%v)，改为抽检全部候选通道\n", err)
-		} else {
-			opts.AVChannels = channels
-		}
-	}
-	if a.avAt != "" {
-		instants, err := util.ParseInstantList(a.avAt, a.busyDaysAgo, nowFunc())
-		if err != nil {
-			fmt.Printf("警告: 定点抽检时刻无效(%v)，改为繁忙时段逻辑选点\n", err)
-		} else {
-			opts.AVAt = instants
-		}
-	}
+	opts := buildOptions(a, os.Stderr)
 
 	var devices []model.Device
 	if a.ip != "" || a.password != "" {
@@ -196,6 +164,53 @@ func run(argv []string) int {
 	report.RenderAll(os.Stdout, reports, a.verbose)
 
 	return exitCode(reports)
+}
+
+// buildOptions converts parsed flags into the shared scan options.
+//
+// Kept separate from run() so the flag↔ScanOptions mapping is testable: the
+// GUI and the CLI share one options struct, and this is the only place where
+// the CLI can silently fall behind a field the GUI already honours. Warnings go
+// to w (stderr in the real CLI) so redirecting the report to a file does not
+// swallow them.
+func buildOptions(a *cliArgs, w io.Writer) model.ScanOptions {
+	deep := a.deepAV || a.avSave
+
+	opts := model.DefaultScanOptions()
+	opts.Lookback = a.lookback
+	opts.NoSearch = a.noSearch
+	opts.Workers = a.workers
+	opts.DeviceWorkers = a.deviceWorkers
+	opts.DeepAVCheck = deep
+	opts.AVSeconds = a.avSeconds
+	opts.AVWorkers = a.avWorkers
+	opts.AVLimit = a.avLimit
+	opts.SilenceDB = a.silenceDB
+	opts.BusyStart = a.busyStart
+	opts.BusyEnd = a.busyEnd
+	opts.BusyDaysAgo = a.busyDaysAgo
+	opts.AVSave = a.avSave
+	opts.AVSaveRoot = a.avSaveRoot
+
+	if a.avChannels != "" {
+		if !deep {
+			fmt.Fprintln(w, "警告: --av-channels 已忽略: 未启用深度抽检(需 --deep-av-check 或 --av-save)")
+		} else if channels, err := util.ParseChannelList(a.avChannels); err != nil {
+			fmt.Fprintf(w, "警告: 抽检通道过滤无效(%v)，改为抽检全部候选通道\n", err)
+		} else {
+			opts.AVChannels = channels
+		}
+	}
+	if a.avAt != "" {
+		if !deep {
+			fmt.Fprintln(w, "警告: --av-at 已忽略: 未启用深度抽检(需 --deep-av-check 或 --av-save)")
+		} else if instants, err := util.ParseInstantList(a.avAt, a.busyDaysAgo, nowFunc()); err != nil {
+			fmt.Fprintf(w, "警告: 定点抽检时刻无效(%v)，改为繁忙时段逻辑选点\n", err)
+		} else {
+			opts.AVAt = instants
+		}
+	}
+	return opts
 }
 
 // exitCode maps inspection results to the CLI exit status:

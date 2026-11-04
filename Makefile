@@ -5,10 +5,10 @@
 GOMODCACHE ?=
 GOENV := $(if $(GOMODCACHE),GOMODCACHE=$(GOMODCACHE),)
 
-# 发布相关的默认构建：只出 GUI 与 Agent，不含命令行巡检。
+# 发布构建：只出 GUI 与 Agent。cli 故意不在这里，cmd/nvr/release_test.go 会校验。
 build: gui agent
 
-# 命令行巡检：仅用于真机排障与 M8 的 Python/Go 逐字段对照，不随发布分发。
+# 命令行巡检：与 GUI 同步维护（cmd/nvr/parity_test.go 守着两侧不漏同步），但不进发布包。
 cli:
 	$(GOENV) CGO_ENABLED=0 go build -o build/nvr ./cmd/nvr
 
