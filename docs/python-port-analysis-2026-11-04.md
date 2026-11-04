@@ -43,6 +43,8 @@
 
 ### 2.2 语言机制层 —— 照搬了 Python 的手段，Go 有更好的写法
 
+> 下表 1–7 项已全部修复（见 §5 的提交号），第 8 项保留未做。
+
 | # | 位置 | Python 的做法 | Go 现在的做法 | 问题 |
 | --- | --- | --- | --- | --- |
 | 1 | `avprobe.go:712` `runCommand` | `Popen` + `while True: communicate(timeout=0.25)` | `context.Background()` + 50ms ticker 轮询 + `time.AfterFunc` | 见 §3.1 |
@@ -56,9 +58,9 @@
 
 ## 3. 逐项分析与改法
 
-### 3.1 【高】取消机制：轮询模拟事件
+### 3.1 【高】取消机制：轮询模拟事件 ✅ 已修复
 
-**现状**（`avprobe.go:712-775`）：
+**原状**（`avprobe.go:712-775`）：
 
 ```go
 ctx, cancel := context.WithCancel(context.Background())  // ← 断开了上游 ctx
@@ -78,27 +80,30 @@ go func() {
 
 **为什么这是照搬**：Python 侧 `_run_cancellable`（`av_probe.py:476`）必须这样写 ——
 `subprocess.Popen` 的 `communicate(timeout=)` 超时后进程还在跑，只能靠外层循环反复 poll。
-Go 的 `exec.CommandContext` 在 ctx 取消时**由运行时直接 Kill 子进程**，一行就够：
+Go 的 `exec.CommandContext` 在 ctx 取消时**由运行时直接 Kill 子进程**，一行就够。
+
+**已改成**：
 
 ```go
-ctx, cancel := context.WithTimeout(s.ctx, timeout) // s.ctx 来自调用链
-defer cancel()
+ctx := s.ctx()                       // 来自 Service.Ctx（调用链注入）
+if timeout > 0 { ctx, _ = context.WithTimeout(ctx, timeout) }
 cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 ```
 
-**三个实际代价**：
+`CheckCancel func() error` 换成 `Ctx context.Context`；`recording`/`storage` 的 Fetcher
+接口也从 `CheckCancel() error` 改成 `Context()`。20+ 个检查点保留了（它们本身是合理的
+短路径检查），但读的都是同一个 ctx。
 
-1. **取消延迟**：最坏 50ms 才响应，且 64 路 × 多轮重试会累积
-2. **goroutine 泄漏面**：每次 ffmpeg 调用多一个 ticker goroutine；`stopPoll` 若因 panic 未 close 就泄漏
-3. **ctx 谱系断裂**：`context.Background()` 意味着上游的 deadline/cancel 传不进来，
-   只能靠外部塞 `CheckCancel` 回调补 —— 这正是 `CheckCancel` 渗进 5 个包的根源
+**实测**：SIGINT 到进程退出 6ms（原来受 50ms 轮询粒度限制），`exit=130`，无残留进程。
+变异验证：把 `exec.CommandContext` 换回 `exec.Command`，取消测试 8 秒超时变红。
 
-**范围**：`CheckCancel` 出现在 `isapi`、`recording`、`storage`、`avprobe`、`scan` 五个包，
-字段定义 `avprobe.go:73`、`recording.go:26`、`storage.go:18`。改成 `Service.ctx context.Context`
-是一处架构改动，但能**同时删掉 3 个接口方法字段和 20+ 个 `if err := s.checkCancel()` 检查点**。
-
-> 建议单独一个 commit 做，改动面大但机械；现有 `cancel_test.go`（4 设备并发取消）
-> 和 `soak_test.go` 正好可以验证没有回归。
+> ⚠️ **这次改动自己引入过一个回归**，记录在此：`Build` 里最初写成
+> `Ctx: client.Context()`，而 ctx 是之后的 `onNVR` 钩子才 `SetContext` 的 ——
+> 快照拿到的是 `Background`。结果是 HTTP 能取消、ffmpeg 不能。
+> 原实现用 `CheckCancel: client.CheckCancel`（方法值，每次现读）所以没这个问题，
+> **改成快照就坏了**。修法是 `NVR.SetContext` 单点同时注入客户端与抽检层，
+> 并补 `internal/scan/context_test.go` 锁住。
+> 教训：把"每次现读的回调"换成"一次性快照"时，要检查所有安装点的时序。
 
 ### 3.2 【中】xmlnode：用 Go 复刻 ElementTree
 
@@ -137,7 +142,7 @@ cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 **暂不处理**：`Text += string(t)` 理论上是 O(n²) 累积。ISAPI 响应里每个节点的
 CharData 基本只有一个片段，实测 `Parse` 已经很便宜，改它收益为零。
 
-### 3.3 【中】`ParseChannelList(value any)`：鸭子类型渗进核心
+### 3.3 【中】`ParseChannelList(value any)`：鸭子类型渗进核心 ✅ 已修复
 
 **现状**（`util.go:106`）：`any` 接 `nil`/`bool`/`int`/`string`/`[]int`/`[]string` 六种形态，
 只因为 Python 那边 `av_channels` 可能是 `None`、`"31,64"` 或 `[31, 64]`。
@@ -155,7 +160,7 @@ CharData 基本只有一个片段，实测 `Parse` 已经很便宜，改它收�
 
 收益：删掉约 40 行类型分支，`bool`/`float` 误传变成编译错误而不是运行时"无法解析的通道列表"。
 
-### 3.4 【中】两份 `parsePercent`，语义还不一致
+### 3.4 【中】两份 `parsePercent`，语义还不一致 ✅ 已修复
 
 | 位置 | 签名 | 解析失败时 |
 | --- | --- | --- |
@@ -171,7 +176,7 @@ CharData 基本只有一个片段，实测 `Parse` 已经很便宜，改它收�
 **改法**：抽到 `util.ParsePercent(s) (float64, bool)`，两处共用，health 侧把 `!ok` 计入
 「磁盘使用率未确认」统计。
 
-### 3.5 【低】自定义 min/max 全家桶
+### 3.5 【低】自定义 min/max 全家桶 ✅ 已修复
 
 Go 1.21 起内置 `min`/`max`（泛型，支持 int/float/string）。
 
@@ -184,7 +189,7 @@ Go 1.21 起内置 `min`/`max`（泛型，支持 int/float/string）。
 
 注意：同包内自定义 `max` 会 **shadow** 内置函数，不报错 —— 所以这个问题不会被编译器提醒。
 
-### 3.6 【低】纯转发的导出壳
+### 3.6 【低】纯转发的导出壳 ✅ 已修复
 
 ```go
 // avprobe.go:350-356
@@ -203,7 +208,7 @@ func (s *Service) swapRTSPPort(uri string, port int) (string, bool) {
 
 改：删掉方法版，调用点直接用包级函数；`judgeRecordingOK` 直接改名导出。
 
-### 3.7 【低】`cmsearchCollect` 的返回值顺序
+### 3.7 【低】`cmsearchCollect` 的返回值顺序 ✅ 已修复
 
 ```go
 func (s *Service) cmsearchCollect(trackID string, start, end time.Time) (error, []*xmlnode.Node)
@@ -212,7 +217,7 @@ func (s *Service) cmsearchCollect(trackID string, start, end time.Time) (error, 
 error 在第一位。Go 惯例是最后一位，`if err != nil` 才读得顺。这是 Python「先抛异常」
 的思维映射。改起来只是签名 + 2 个调用点。
 
-### 3.8 【低】`queueConcurrent` 的手工 worker pool
+### 3.8 【低】`queueConcurrent` 的手工 worker pool ⬜ 未做
 
 `scan.go:314` 的 channel + WaitGroup 写法是**正确**的，但与 Python 的 `ThreadPoolExecutor`
 同构，没有用上 Go 的现成工具：
@@ -236,17 +241,24 @@ error 在第一位。Go 惯例是最后一位，`if err != nil` 才读得顺。�
 | **表驱动健康判定** | `detectOnlineValues` / `detectAbnormalValues` 两个 set 替代 Python 的 if/elif 链，白名单语义更清楚 |
 | **`Summarize` 拆分** | Python 的 `get_health_summary` 是单个 300 行方法；Go 拆成 `Summarize` + `parsePercent`/`driveStatusBad`/`severityRank` |
 
-## 5. 建议执行顺序
+## 5. 执行顺序与落地状态
 
-| 批次 | 内容 | 风险 | 收益 |
-| --- | --- | --- | --- |
-| 1 | §3.5 删 `max`/`minInt`/`maxInt`、§3.6 删转发壳、§3.7 调返回值顺序 | 极低，纯机械 | 减少误读 |
-| 2 | §3.4 统一 `parsePercent` | 低，需补 health 侧「未知」测试 | 消除口径分叉 |
-| 3 | §3.3 收窄 `ParseChannelList` 类型 | 中，要改 config/CLI/GUI 三个入口 | 类型安全 |
-| 4 | §3.2 xmlnode：`Find` 命中即停、遍历改显式栈、`errors.Is` | 低 | `Find` 6.8×，深文档不爆栈；**不做** struct 映射 |
-| 5 | §3.1 用 ctx 替换 `CheckCancel` 回调 + 删轮询 goroutine | **高**，跨 5 个包 | 架构最干净，取消即时 |
+| 批次 | 内容 | 状态 |
+| --- | --- | --- |
+| 1 | §3.5 删 `max`/`minInt`/`maxInt`、§3.6 删转发壳、§3.7 调返回值顺序 | ✅ `92f3e70`，净删 29 行；顺带补了分页合并的测试缺口 |
+| 2 | §3.4 统一 `parsePercent` 到 `util` | ✅ `88bb236`，只统一实现、不改判定 |
+| 3 | §3.3 收窄 `ParseChannelList` 类型 | ✅ `26f67cc`，净删 43 行。**实际只有 2 个调用点**（都传 string），不是预想的 config/CLI/GUI 三入口 |
+| 4 | §3.2 xmlnode：`Find` 命中即停、遍历改显式栈、`errors.Is` | ✅ `5b0cf39`，`Find` 6.8×；**不做** struct 映射 |
+| 5 | §3.1 用 ctx 替换 `CheckCancel` 回调 + 删轮询 goroutine | ✅ `a696a95`，SIGINT 6ms 退出 |
+| — | §3.8 `queueConcurrent` worker pool | ⬜ 未做（设备数 ≤4，`runWith` 内已有兜底，优先级最低） |
 
-批次 5 建议单独排，改完必须跑 `cancel_test.go` + 真机 Ctrl-C 验证（`pgrep -f ffmpeg` 为空）。
+**过程中被推翻的两个判断**（原始分析高估了）：
+
+1. **xmlnode 性能**：以为查询是热路径瓶颈，实测 120 次 `FindText` 只占 2.5µs，
+   `Parse` 占绝对大头且总量可忽略。最终只做了 `Find` 提前返回和显式栈，
+   没做 struct 映射。
+2. **批次 3 的改动面**：原以为要动 config、CLI、GUI 三个入口，实际 `any` 的
+   `bool`/`int`/`[]int`/`[]string` 分支全是死代码，生产调用点只有两个字符串。
 
 ## 6. 一个提醒
 
