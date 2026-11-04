@@ -18,7 +18,7 @@ M7  GUI 功能对等                   3–4 周
 M8  测试迁移 + 真机回归 + 打包     2–3 周
 ```
 
-合计约 4–5 人月。M0–M5 为可独立交付的 Go CLI；M6 起为 GUI。
+合计约 4–5 人月。M0–M5 为可独立验证的 Go 业务核心；M6 起为 GUI——**GUI 是唯一交付形态**。
 
 ---
 
@@ -74,6 +74,9 @@ M8  测试迁移 + 真机回归 + 打包     2–3 周
 **验收**：`go test ./internal/avprobe` 全绿（含取消、候选、多时刻）。
 
 ## M5 健康判定 + 编排 + CLI（1.5 周）✅ 已完成
+
+> 2026-11-04 起：**交付形态只保留 GUI**，`cmd/nvr` 降级为内部排障/验收工具（不进发布产物）。
+> 后续功能开发仍以 GUI 为准，CLI 只是 `internal/scan` 的一层薄封装，业务改动不需要动它。
 
 - [x] `internal/health`：`chanDetectResult` 白名单、双「未知」口径、严重度聚合（84 个子用例）
 - [x] `internal/scan`：`Build`（选项 → NVR）、`Run`（编排+进度）、`Queue`（多设备）、`RunSingleAV`

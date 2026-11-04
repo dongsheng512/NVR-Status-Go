@@ -5,8 +5,10 @@
 GOMODCACHE ?=
 GOENV := $(if $(GOMODCACHE),GOMODCACHE=$(GOMODCACHE),)
 
-build: cli gui agent
+# 发布相关的默认构建：只出 GUI 与 Agent，不含命令行巡检。
+build: gui agent
 
+# 命令行巡检：仅用于真机排障与 M8 的 Python/Go 逐字段对照，不随发布分发。
 cli:
 	$(GOENV) CGO_ENABLED=0 go build -o build/nvr ./cmd/nvr
 

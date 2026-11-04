@@ -2,15 +2,15 @@
 
 海康威视 NVR 状态巡检工具。**自 2026-11 起，本仓库（Go 1.27 + [MyGo](https://github.com/egoist/mygo) v0.5.1）是唯一开发主线**。Python/PySide6 的 v2.3.0 保留在[独立旧仓库](https://github.com/dongsheng512/NVR-Status)（已停止维护，仅作归档），本地副本作行为对照（oracle）。**两个仓库彼此独立、历史不共享。**
 
-- 业务核心与 CLI：纯 Go，无 GUI 依赖，可单独构建为 `nvr` 单二进制
-- GUI：MyGo 原生绘制（GPU、无 WebView），已实现功能对等（M7）
-- 后台巡检 Agent：定时巡检 + `/healthz` + Prometheus `/metrics` + Webhook
+- 业务核心：纯 Go，无 GUI 依赖；GUI 与后台 Agent 共用同一套 `internal/` 包
+- GUI：MyGo 原生绘制（GPU、无 WebView），已实现功能对等（M7）—— **发布产物只有它**
+- 后台巡检 Agent：定时巡检 + `/healthz` + Prometheus `/metrics` + Webhook（可选，随需自行构建）
 - 目标平台：macOS / Windows / Linux
 
 ## 目录
 
 ```
-cmd/nvr/            CLI 入口（多设备巡检）
+cmd/nvr/            命令行巡检（**仅内部排障/验收，不随发布**）
 cmd/nvr-gui/        GUI 入口
 cmd/nvr-agent/      无 GUI 的常驻巡检 Agent
 internal/model/     领域模型（设备 / 相机 / 通道记录 / 结果）
@@ -37,11 +37,13 @@ resources/          应用图标
 
 ```bash
 go mod tidy          # 首次
-make cli             # → build/nvr
-make gui             # → build/nvr-gui
-make agent           # → build/nvr-agent
+make gui             # → build/nvr-gui        （发布产物）
+make agent           # → build/nvr-agent      （可选，无人值守监控）
+make build           # gui + agent
 make test            # go test ./...
 make vet             # go vet ./...
+
+make cli             # → build/nvr  仅排障/验收用，不随发布
 ```
 
 > MyGo 要求 Go 1.27+。若 `go env GOMODCACHE` 不可写（沙箱环境），使用
@@ -55,7 +57,8 @@ go tool mygo build
 #      build/darwin-arm64/NVR Status 3.0.0 arm64.dmg
 ```
 
-`mygo.json` 的 `main` 指向 `./cmd/nvr-gui`。Windows/Linux 产物用
+`mygo.json` 的 `main` 指向 `./cmd/nvr-gui`。**应用包与 dmg 里只有 GUI**——命令行巡检
+（`cmd/nvr`）和 Agent（`cmd/nvr-agent`）都不会被打进去。Windows/Linux 产物用
 `go tool mygo build -platform windows/amd64,linux/amd64`（需对应平台打包工具）。
 
 ## 与 Python v2.3.0 的关系 / 迁移说明
@@ -87,7 +90,7 @@ python3 scripts/check-secrets.py --all   # 也可手动全树自检
 | M2 ISAPI 客户端（Digest/XML/缓存） | ✅ 完成 |
 | M3 存储与录像（CMSearch） | ✅ 完成 |
 | M4 深度抽检（ffmpeg/RTSP） | ✅ 完成 |
-| M5 健康判定 + 编排 + CLI | ✅ 完成 |
+| M5 健康判定 + 编排 + CLI | ✅ 完成（CLI 现降级为内部排障工具） |
 | M6 GUI MVP | ✅ 扫描接入、档案/设备表单、通道表 |
 | M7 GUI 功能对等 | ✅ 代码完成（待三平台人工验收） |
 | M8 测试迁移 + 多平台发布 | ⬜ 待做：~200 个业务用例迁移、真机 A/B 逐字段对照、三平台产物、签名/公证、ffmpeg 捆绑 |
@@ -95,9 +98,7 @@ python3 scripts/check-secrets.py --all   # 也可手动全树自检
 ```bash
 # 在仓库根目录
 go test ./...          # 全部通过（含伪 ISAPI 端到端、伪 ffmpeg）
-go build -o build/nvr ./cmd/nvr
-go build -o build/nvr-gui ./cmd/nvr-gui
-./build/nvr --version  # 3.0.0-dev
+make gui               # → build/nvr-gui（发布产物）
 ```
 
 > 已知发布门禁未过：当前 `.app` 为 ad-hoc 签名、未捆绑 ffmpeg；换机器需先安装 ffmpeg 才能做深度抽检。
@@ -151,3 +152,24 @@ go build -o build/nvr-agent ./cmd/nvr-agent
   `Authorization: Bearer <令牌>`；想固定令牌就用 `--token` 指定。Prometheus 侧配 `bearer_token_file` 即可。
 
 > 磁盘使用率无法解析时不会退化成 `0%`（那会被读成"空盘"），而是单独输出 `nvr_disk_usage_unknown{...} 1`。
+
+## 命令行巡检（仅内部排障 / 验收，不随发布）
+
+GUI 是唯一发布形态；`cmd/nvr` 保留下来只做两件事，**面向用户的功能开发只改 GUI**：
+
+1. **真机排障**：SSH 到现场机器上直接打一轮，把 stderr 日志和文本报告贴出来，比让人截图快得多。
+2. **M8 逐字段 A/B 对照**：Python v2.3.0 与 Go 版的输出都是稳定文本，可以直接 `diff`；GUI 只能肉眼比。
+
+```bash
+make cli                       # → build/nvr
+./build/nvr --version          # 3.0.0-dev
+./build/nvr all                # 当前档案的全部设备
+./build/nvr 2 --deep-av-check  # 第 2 台，含音视频抽检
+./build/nvr -i 192.0.2.10 -w <密码> --av-channels 31,64
+```
+
+- 退出码：`0` 正常、`1` 有设备失败、`2` 无失败但存在「严重」；`Ctrl-C`/`SIGTERM` 返回 `130`/`143`。
+- 参数全集与 Python 版一致，见 `./build/nvr --help`。
+
+> 它只是 `internal/scan` 的一层薄封装，业务逻辑改动（健康判定、抽检、CMSearch）不需要动它；
+> 因此「保留」几乎不增加维护成本，但**不要把它当作对外交付物**。
