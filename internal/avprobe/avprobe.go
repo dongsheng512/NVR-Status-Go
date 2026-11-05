@@ -888,7 +888,7 @@ type audioProbeResult struct {
 
 // audioVerdict maps an audio pull status to (音频抽检, 备注).
 //
-// Diverges from the Python v2.3.0 oracle in two places, both deliberate:
+// Two rules worth keeping explicit:
 //   - "ok" with no level reading is 未知, not 正常. volumedetect prints no
 //     mean_volume line at all for a track with zero decodable samples, and a
 //     failed decode has no reading either; neither is evidence of working audio.
@@ -896,7 +896,7 @@ type audioProbeResult struct {
 //     returned by every firmware, and a microphone-less camera would otherwise
 //     be escalated to 严重 on missing config data alone.
 //
-// See docs/python-port-analysis-2026-11-04.md §7.
+// See docs/python-port-analysis-2026-11-04.md §7 for the measurements behind these.
 func audioVerdict(status string, expectAudio *bool, meanDB *float64, silenceDB float64) (string, string) {
 	switch status {
 	case "ok":

@@ -1,6 +1,6 @@
 # NVR Status 3.0（Go + MyGo）
 
-海康威视 NVR 状态巡检工具。**自 2026-11 起，本仓库（Go 1.27 + [MyGo](https://github.com/egoist/mygo) v0.5.1）是唯一开发主线**。Python/PySide6 的 v2.3.0 保留在[独立旧仓库](https://github.com/dongsheng512/NVR-Status)（已停止维护，仅作归档），本地副本作行为对照（oracle）。**两个仓库彼此独立、历史不共享。**
+海康威视 NVR 状态巡检工具。**自 2026-11 起，本仓库（Go 1.27 + [MyGo](https://github.com/egoist/mygo) v0.5.1）是唯一开发主线**。Python/PySide6 的 v2.3.0 留在[独立旧仓库](https://github.com/dongsheng512/NVR-Status)，已停止维护、仅作归档与历史参考；**两个仓库彼此独立、历史不共享**。自 2026-11-05 起，判定口径与报告行为以 Go 自身正确性和真机结果为准，不再与 Python 版做双跑对照。
 
 - 业务核心：纯 Go，无 GUI 依赖；GUI 与后台 Agent 共用同一套 `internal/` 包
 - GUI：MyGo 原生绘制（GPU、无 WebView），已实现功能对等（M7）—— **发布产物只有它**
@@ -83,12 +83,13 @@ go tool mygo build        # 不捆 ffmpeg 的裸包，仅供快速迭代
 代价是 `.app` 从 11.6 MB 涨到 49.4 MB（dmg 16.1 MB）。注意本机 Homebrew 的 ffmpeg 是
 `--enable-gpl` 构建，对外分发要遵守 GPL。
 
-## 与 Python v2.3.0 的关系 / 迁移说明
+## 与 Python v2.3.0 的关系（历史）
 
 - 配置格式、用户数据目录（`~/Library/Application Support/NVRStatus`、`%APPDATA%\NVRStatus`）保持兼容；已有的 `profiles.json`、历史报告 `reports/`、系统钥匙串密码可直接沿用。
-- CLI 参数、报告字段、健康判定口径（含 `chanDetectResult` 白名单与双「未知」比例口径）与 v2.3.0 对齐；**仅两处音频判定有意偏离**（电平未测到 / 配置未知且无音轨不再误判为「正常」「异常」），见 [移植分析 §7](docs/python-port-analysis-2026-11-04.md)。M8 逐字段 A/B 时这两类用例预期有差异。
+- CLI 参数与报告字段沿用 v2.3.0 的命名，方便老用户过渡；健康判定口径（`chanDetectResult` 白名单、双「未知」比例口径）以当前 Go 实现为准，**不再要求与 Python 逐字一致**。
+- 音频判定有两处按实测修正过（电平未测到 / 配置未知且无音轨不再误判为「正常」「异常」），原因见 [移植分析 §7](docs/python-port-analysis-2026-11-04.md)。那是现行口径，不是待对齐的差异。
 - 本仓库于 2026-11-04 新建为干净的 Go 版主线，**不带 v2.x 的提交历史、tag 与 release**；与 Python 版仓库是**两个独立仓库**，不是分支、不是 fork。
-- Python v2.3.0 留在 `dongsheng512/NVR-Status`，**已停止维护**，仅作归档与 oracle 双跑，直到 M8 的逐字段对照完成；后续功能开发、issue 与发布都以本仓库为准。
+- 后续功能开发、issue 与发布都以本仓库为准；Python 版不再参与验收。
 - 详细阶段与验收标准见 [PLAN.md](PLAN.md)。
 
 ## 提交前脱敏检查（务必启用）
@@ -115,7 +116,7 @@ python3 scripts/check-secrets.py --all   # 也可手动全树自检
 | M5 健康判定 + 编排 + CLI | ✅ 完成（CLI 与 GUI 同步维护，不进发布包） |
 | M6 GUI MVP | ✅ 扫描接入、档案/设备表单、通道表 |
 | M7 GUI 功能对等 | ✅ 代码完成（待三平台人工验收） |
-| M8 测试迁移 + 多平台发布 | 🟡 进行中：~200 个业务用例迁移、真机 A/B 逐字段对照、三平台产物、签名/公证待做；**macOS 的 ffmpeg 捆绑已完成**（`make app`） |
+| M8 测试补齐 + 多平台发布 | 🟡 进行中：业务用例覆盖核对、真机验收、Windows/Linux 产物、签名/公证待做；**macOS 的 ffmpeg 捆绑已完成**（`make app`） |
 
 ```bash
 # 在仓库根目录
@@ -184,7 +185,7 @@ go build -o build/nvr-agent ./cmd/nvr-agent
 它有三条 GUI 替代不了的路径：
 
 1. **真机排障**：SSH 到现场机器上直接打一轮，把 stderr 日志和文本报告贴出来，比让人截图快得多。
-2. **M8 逐字段 A/B 对照**：Python v2.3.0 与 Go 版的输出都是稳定文本，可以直接 `diff`；GUI 只能肉眼比。
+2. **稳定文本便于比对与留档**：同一设备的巡检结果可以直接 `diff`、贴进工单或接进脚本；GUI 只能肉眼比。
 3. **定点抽检**：`--av-channels` 按物理通道号筛、`--av-at` 指定具体时刻，这两项目前只在 CLI 上有
    （GUI 未暴露；`cmd/nvr` 因此比 GUI 多出两种抽检能力，不是功能子集）。
 
