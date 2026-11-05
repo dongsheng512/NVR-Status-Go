@@ -86,7 +86,7 @@ go tool mygo build        # 不捆 ffmpeg 的裸包，仅供快速迭代
 ## 与 Python v2.3.0 的关系 / 迁移说明
 
 - 配置格式、用户数据目录（`~/Library/Application Support/NVRStatus`、`%APPDATA%\NVRStatus`）保持兼容；已有的 `profiles.json`、历史报告 `reports/`、系统钥匙串密码可直接沿用。
-- CLI 参数、报告字段、健康判定口径（含 `chanDetectResult` 白名单与双「未知」比例口径）与 v2.3.0 对齐。
+- CLI 参数、报告字段、健康判定口径（含 `chanDetectResult` 白名单与双「未知」比例口径）与 v2.3.0 对齐；**仅两处音频判定有意偏离**（电平未测到 / 配置未知且无音轨不再误判为「正常」「异常」），见 [移植分析 §7](docs/python-port-analysis-2026-11-04.md)。M8 逐字段 A/B 时这两类用例预期有差异。
 - 本仓库于 2026-11-04 新建为干净的 Go 版主线，**不带 v2.x 的提交历史、tag 与 release**；与 Python 版仓库是**两个独立仓库**，不是分支、不是 fork。
 - Python v2.3.0 留在 `dongsheng512/NVR-Status`，**已停止维护**，仅作归档与 oracle 双跑，直到 M8 的逐字段对照完成；后续功能开发、issue 与发布都以本仓库为准。
 - 详细阶段与验收标准见 [PLAN.md](PLAN.md)。

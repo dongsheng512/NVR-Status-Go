@@ -887,15 +887,35 @@ type audioProbeResult struct {
 }
 
 // audioVerdict maps an audio pull status to (音频抽检, 备注).
+//
+// Diverges from the Python v2.3.0 oracle in two places, both deliberate:
+//   - "ok" with no level reading is 未知, not 正常. volumedetect prints no
+//     mean_volume line at all for a track with zero decodable samples, and a
+//     failed decode has no reading either; neither is evidence of working audio.
+//   - "no_stream" with an unknown config is 未知, not 异常. SaveAudio is not
+//     returned by every firmware, and a microphone-less camera would otherwise
+//     be escalated to 严重 on missing config data alone.
+//
+// See docs/python-port-analysis-2026-11-04.md §7.
 func audioVerdict(status string, expectAudio *bool, meanDB *float64, silenceDB float64) (string, string) {
 	switch status {
 	case "ok":
-		if meanDB != nil && *meanDB <= silenceDB {
+		if meanDB == nil {
+			return model.StatusUnknown, "音频未确认(电平未测到)"
+		}
+		if *meanDB <= silenceDB {
 			return model.StatusWarn, fmt.Sprintf("疑似静音(mean %.1fdB)", *meanDB)
 		}
 		return model.StatusOK, ""
+	case "silent":
+		// -inf dB: the track exists but every sample is zero. This is a real
+		// silence verdict, not a failed measurement.
+		return model.StatusWarn, "疑似静音(无有效采样)"
 	case "no_stream":
-		if expectAudio != nil && !*expectAudio {
+		if expectAudio == nil {
+			return model.StatusUnknown, "音频未确认(配置未知且无音轨)"
+		}
+		if !*expectAudio {
 			return model.StatusSkip, "配置未开音频"
 		}
 		return model.StatusBad, "无音轨"
@@ -1045,8 +1065,18 @@ func (s *Service) probeAudioTrack(ffmpeg, ffprobe string, candidates []candidate
 					return &audioProbeResult{Probe: model.StatusUnknown,
 						Note: "音频抽检异常: " + truncateRunes(maskCredentials(verr.Error()), 80)}, nil
 				}
-				if m := meanVolumeRe.FindStringSubmatch(vp.Stderr); m != nil {
-					if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+				// runCommand reports a non-zero exit through ExitCode, not error.
+				// Without this check a failed decode would fall through to
+				// "ok with no reading" and be reported as working audio.
+				if vp.ExitCode != 0 {
+					status = "fail"
+					if lastErr == "" {
+						lastErr = fmt.Sprintf("volumedetect 退出码 %d", vp.ExitCode)
+					}
+				} else if m := meanVolumeRe.FindStringSubmatch(vp.Stderr); m != nil {
+					if strings.EqualFold(m[1], "-inf") {
+						status = "silent"
+					} else if v, err := strconv.ParseFloat(m[1], 64); err == nil {
 						meanDB = &v
 					}
 				}
@@ -1061,7 +1091,9 @@ func (s *Service) probeAudioTrack(ffmpeg, ffprobe string, candidates []candidate
 }
 
 var (
-	meanVolumeRe = regexp.MustCompile(`mean_volume:\s*(-?[0-9.]+)\s*dB`)
+	// -inf dB is what volumedetect prints when every sample is zero; the old
+	// numeric-only pattern silently missed it.
+	meanVolumeRe = regexp.MustCompile(`(?i)mean_volume:\s*(-?(?:[0-9]+(?:\.[0-9]+)?|inf))\s*dB`)
 	probePointRe = regexp.MustCompile(`抽检点\s+([0-9 :\-]+)`)
 )
 

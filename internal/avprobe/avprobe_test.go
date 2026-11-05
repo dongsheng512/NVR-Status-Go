@@ -47,7 +47,7 @@ if [ "$mode" = "vol" ]; then
   if [ -n "${FAKE_MEAN_DB:-}" ]; then
     echo "[Parsed_volumedetect_0 @ 0x1] mean_volume: ${FAKE_MEAN_DB} dB" >&2
   fi
-  exit 0
+  exit "${FAKE_VOL_RC:-0}"
 fi
 if [ -n "${FAKE_SLEEP:-}" ]; then
   sleep "$FAKE_SLEEP"
@@ -146,6 +146,7 @@ func installFakes(t *testing.T) fakeTools {
 	t.Setenv("FAKE_VIDEO_MODE", "ok")
 	t.Setenv("FAKE_AUDIO_MODE", "ok")
 	t.Setenv("FAKE_MEAN_DB", "-42.5")
+	t.Setenv("FAKE_VOL_RC", "")
 	t.Setenv("FAKE_VIDEO_JSON", videoOKJSON)
 	t.Setenv("FAKE_AUDIO_JSON", audioOKJSON)
 	t.Setenv("FAKE_FFPROBE_RC", "")
@@ -364,6 +365,75 @@ func TestAudioMissingTrackSkipWhenNotConfigured(t *testing.T) {
 		t.Fatalf("audio = %s, want 跳过", recs[0].AudioProbe)
 	}
 	if !strings.Contains(recs[0].ProbeDetail, "配置未开音频") {
+		t.Fatalf("detail = %q", recs[0].ProbeDetail)
+	}
+}
+
+// A pulled audio track with no mean_volume reading is not evidence of working
+// audio: volumedetect prints no such line for zero decodable samples. It used
+// to be reported as 正常.
+func TestAudioNoLevelReadingIsUnknownNotOK(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	t.Setenv("FAKE_MEAN_DB", "")
+	recs := []model.Record{makeRecord("101", "1", "cam101", boolPtr(true), true, "")}
+	if err := svc.Run(recs); err != nil {
+		t.Fatal(err)
+	}
+	if recs[0].AudioProbe != model.StatusUnknown {
+		t.Fatalf("audio = %s, want 未知; detail=%s", recs[0].AudioProbe, recs[0].ProbeDetail)
+	}
+	if !strings.Contains(recs[0].ProbeDetail, "电平未测到") {
+		t.Fatalf("detail = %q, want the reason", recs[0].ProbeDetail)
+	}
+}
+
+// -inf dB means every sample is zero. The numeric-only regex used to miss it,
+// which dropped straight into "正常".
+func TestAudioNegativeInfinityIsSilenceWarning(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	t.Setenv("FAKE_MEAN_DB", "-inf")
+	recs := []model.Record{makeRecord("101", "1", "cam101", boolPtr(true), true, "")}
+	if err := svc.Run(recs); err != nil {
+		t.Fatal(err)
+	}
+	if recs[0].AudioProbe != model.StatusWarn {
+		t.Fatalf("audio = %s, want 警告; detail=%s", recs[0].AudioProbe, recs[0].ProbeDetail)
+	}
+	if !strings.Contains(recs[0].ProbeDetail, "无有效采样") {
+		t.Fatalf("detail = %q", recs[0].ProbeDetail)
+	}
+}
+
+// runCommand reports non-zero exits through ExitCode, not error. A failed
+// volumedetect must not be mistaken for a successful pull.
+func TestAudioVolumeDetectFailureIsUnknown(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	t.Setenv("FAKE_VOL_RC", "1")
+	recs := []model.Record{makeRecord("101", "1", "cam101", boolPtr(true), true, "")}
+	if err := svc.Run(recs); err != nil {
+		t.Fatal(err)
+	}
+	if recs[0].AudioProbe != model.StatusUnknown {
+		t.Fatalf("audio = %s, want 未知; detail=%s", recs[0].AudioProbe, recs[0].ProbeDetail)
+	}
+	if !strings.Contains(recs[0].ProbeDetail, "volumedetect 退出码 1") {
+		t.Fatalf("detail = %q, want the exit code", recs[0].ProbeDetail)
+	}
+}
+
+// With no SaveAudio from the firmware we cannot tell whether a missing track
+// is expected. Escalating to 严重 on missing config data alone was too harsh.
+func TestAudioMissingTrackUnknownConfigIsUnknown(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	t.Setenv("FAKE_AUDIO_MODE", "nostream")
+	recs := []model.Record{makeRecord("101", "1", "cam101", nil, true, "")}
+	if err := svc.Run(recs); err != nil {
+		t.Fatal(err)
+	}
+	if recs[0].AudioProbe != model.StatusUnknown {
+		t.Fatalf("audio = %s, want 未知; detail=%s", recs[0].AudioProbe, recs[0].ProbeDetail)
+	}
+	if !strings.Contains(recs[0].ProbeDetail, "配置未知") {
 		t.Fatalf("detail = %q", recs[0].ProbeDetail)
 	}
 }
@@ -1037,8 +1107,10 @@ func TestAudioVerdict(t *testing.T) {
 	}{
 		{"ok", "ok", &yes, &ok, -80, model.StatusOK, ""},
 		{"silence", "ok", &yes, &silent, -80, model.StatusWarn, "静音"},
+		{"ok but no level reading", "ok", &yes, nil, -80, model.StatusUnknown, "电平未测到"},
+		{"silent", "silent", &yes, nil, -80, model.StatusWarn, "无有效采样"},
 		{"no stream expected", "no_stream", &yes, nil, -80, model.StatusBad, "无音轨"},
-		{"no stream unknown config", "no_stream", nil, nil, -80, model.StatusBad, "无音轨"},
+		{"no stream unknown config", "no_stream", nil, nil, -80, model.StatusUnknown, "配置未知"},
 		{"no stream not configured", "no_stream", &no, nil, -80, model.StatusSkip, "未开"},
 		{"pull fail", "fail", &yes, nil, -80, model.StatusUnknown, "未确认"},
 	}
