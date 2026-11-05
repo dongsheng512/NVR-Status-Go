@@ -1,5 +1,10 @@
 #!/bin/sh
 # 提交前脱敏检查。启用：git config core.hooksPath .githooks
+# 优先用 make tools 预编译的二进制；没有则回退到 go run（需要 Go 工具链）。
 set -e
 root=$(git rev-parse --show-toplevel)
-exec python3 "$root/scripts/check-secrets.py"
+cd "$root"
+if [ -x "$root/bin/nvrtool" ]; then
+  exec "$root/bin/nvrtool" check-secrets
+fi
+exec go run ./cmd/nvrtool check-secrets

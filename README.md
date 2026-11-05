@@ -28,8 +28,8 @@ internal/scan/      巡检编排（CLI/GUI/Agent 共用）
 internal/nvgui/     MyGo 界面
 internal/monitor/   Agent 的快照与指标
 internal/report/    终端报告渲染
+cmd/nvrtool/        构建期工具（ffmpeg 捆绑、提交脱敏，Go 实现）
 docs/               功能机会评估与界面截图
-scripts/            图标生成、提交前脱敏检查
 resources/          应用图标
 ```
 
@@ -46,9 +46,12 @@ make vet             # go vet ./...
 make cli             # → build/nvr  与 GUI 同步维护，不进发布包
 make app             # → .app + .dmg（自带 ffmpeg，见下）
 make run             # = make app + open -n，日常验证用这一条
+make tools           # → bin/nvrtool（预编译构建工具，供提交钩子走快速路径）
 ```
 
-> MyGo 要求 Go 1.27+。若卡在 `go: downloading ...` 很久或被 SIGTERM 杀掉，
+> **构建工具链只需 Go 1.27+**：仓库内没有 Python 脚本，运行时也没有 Python 依赖。
+> 打包需要的 ffmpeg 捆绑、提交脱敏检查都在 `cmd/nvrtool` 里；外部只调 macOS 的
+> `install_name_tool` / `codesign`。若卡在 `go: downloading ...` 很久或被 SIGTERM 杀掉，
 > 说明模块缓存不可写，改用 `GOMODCACHE=/tmp/gomod make app`。
 
 ### MyGo 打包
@@ -70,18 +73,19 @@ go tool mygo build        # 不捆 ffmpeg 的裸包，仅供快速迭代
 `.app` 被 Finder 或 `open` 启动时继承的是 **launchd** 的 PATH
 （`/usr/bin:/bin:/usr/sbin:/sbin`），**不含 `/opt/homebrew/bin`**。而 `util.ToolBinDirs`
 只查 bundle 内 `bin/` 与 PATH 两处，所以不捆 ffmpeg 的包在从图标启动时会把深度抽检
-静默降级成「ffmpeg 缺失」。`make app` 用 `scripts/bundle-ffmpeg.py` 解决这个问题：
+静默降级成「ffmpeg 缺失」。`make app` 用 `go run ./cmd/nvrtool bundle-ffmpeg` 解决这个问题：
 
 - `resources/darwin/bin/` → MyGo 复制到 `Contents/Resources/bin/`，正是
   `ToolBinDirs` 的第一个查找位置（平台目录写法让 Windows/Linux 产物不带 mac 库）
 - Homebrew 的 `ffmpeg` 只有 420K，真正的体量在 19 个 dylib 里，且按绝对路径引用
-  `/opt/homebrew/...`。脚本把整个依赖闭包一起复制，用 `install_name_tool` 改写成
-  `@loader_path/`，再逐个 ad-hoc 重签（改 load command 会让签名失效，arm64 拒绝加载）
-- 脚本自我校验：任何文件残留绝对路径就报错退出，并把两个二进制真跑一次 `-version`
+  `/opt/homebrew/...`。工具用 `debug/macho` 读依赖闭包（不再需要 `otool`），一起复制后
+  用 `install_name_tool` 改写成 `@loader_path/`，再逐个 ad-hoc 重签
+  （改 load command 会让签名失效，arm64 拒绝加载）
+- 工具自我校验：任何文件残留绝对路径就报错退出，并把两个二进制真跑一次 `-version`
 - 产物在 `.gitignore` 里，不进仓库；换了 ffmpeg 版本重跑 `make ffmpeg`
 - **本机没装 ffmpeg 时默认警告并跳过**，不阻断 `make app`（fresh clone / CI 装依赖前也能出包），
   只是这个 `.app` 的深度抽检会降级。CI 里用
-  `python3 scripts/bundle-ffmpeg.py --require-ffmpeg` 强制检查，避免"忘了装"被悄悄发布。
+  `go run ./cmd/nvrtool bundle-ffmpeg --require-ffmpeg` 强制检查，避免"忘了装"被悄悄发布。
   可用 `NVR_FFMPEG_BIN` 覆盖额外搜索路径（冒号分隔）
 
 代价是 `.app` 从 11.6 MB 涨到 49.4 MB（dmg 16.1 MB）。注意本机 Homebrew 的 ffmpeg 是
@@ -102,8 +106,9 @@ go tool mygo build        # 不捆 ffmpeg 的裸包，仅供快速迭代
 
 ```bash
 git config core.hooksPath .githooks
-# 之后每次 git commit 会自动运行 scripts/check-secrets.py
-python3 scripts/check-secrets.py --all   # 也可手动全树自检
+# 之后每次 git commit 会运行 cmd/nvrtool check-secrets（Go 实现）
+go run ./cmd/nvrtool check-secrets --all   # 手动全树自检
+make tools                                 # 可选：预编译到 bin/nvrtool，钩子走快速路径
 ```
 
 脚本从本机 `NVRStatus/profiles.json` 读取真实值做精确比对，**只报文件与行号、不打印真值**，命中即以非零码阻断提交；未找到本地档案时退化为内网地址提醒（只警告不阻断）。真值本身永不写入仓库。
@@ -154,8 +159,7 @@ make gui               # → build/nvr-gui（发布产物）
 
 ![NVR Status icon](resources/icon.png)
 
-- 1024×1024 PNG：`resources/icon.png`
-- 由 `python3 scripts/make_icon.py` 生成（Pillow，4× 超采样后缩放）
+- 1024×1024 PNG：`resources/icon.png`（已提交，是一次性素材，不在构建链中）
 - `go tool mygo build` 会自动从 `resources/icon.png` 生成 macOS `AppIcon.icns` 与 Windows `.ico`
 
 ## 后台巡检 Agent（无 GUI）

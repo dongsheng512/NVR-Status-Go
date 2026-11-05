@@ -18,5 +18,8 @@ dist/
 *.dmg
 *.app/
 
-# 捆绑进 .app 的 ffmpeg（本机生成，见 scripts/bundle-ffmpeg.py）
+# 预编译的构建工具（make tools 生成，不提交）
+/bin/
+
+# 捆绑进 .app 的 ffmpeg（make app 生成，不提交）
 resources/*/bin/

@@ -1,4 +1,4 @@
-.PHONY: build test vet cli gui agent app run ffmpeg fmt clean
+.PHONY: build test vet cli gui agent app run ffmpeg tools fmt clean
 
 # MyGo 要求 Go 1.27+；本机默认模块缓存不可写时（表现为停在
 # `go: downloading ...` 很久或被 SIGTERM），可覆盖：
@@ -34,10 +34,15 @@ run: app
 	open -n "$(APP)"
 
 # 重新生成 resources/darwin/bin（依赖闭包 + @loader_path 改写 + ad-hoc 签名）。
-# 产物被 .gitignore 忽略；换了 ffmpeg 版本后重跑一次。本机没有 ffmpeg 时脚本
-# 会警告并跳过，不会阻断打包——CI 应改用 scripts/bundle-ffmpeg.py --require-ffmpeg。
+# 产物被 .gitignore 忽略；换了 ffmpeg 版本后重跑一次。本机没有 ffmpeg 时
+# 会警告并跳过，不会阻断打包——CI 应用 `go run ./cmd/nvrtool bundle-ffmpeg
+# --require-ffmpeg` 强制检查。
 ffmpeg:
-	python3 scripts/bundle-ffmpeg.py
+	$(GOENV) go run ./cmd/nvrtool bundle-ffmpeg
+
+# 预编译构建工具，供 pre-commit 钩子走快速路径（省掉每次提交 go run 的编译）。
+tools:
+	$(GOENV) go build -o bin/nvrtool ./cmd/nvrtool
 
 test:
 	$(GOENV) CGO_ENABLED=0 go test ./...
