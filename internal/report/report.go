@@ -232,7 +232,12 @@ func RenderDevice(w io.Writer, r *model.Report, verbose bool) {
 				diskVerdict = model.StatusBad
 			}
 		}
-		fmt.Fprintf(tw, "硬盘\t%s\t%d 块 · %.1f/%.1f TB · 均用 %s\n", diskVerdict, len(r.Drives), used, cap, usageBar(avg, 12))
+		usageNote := ""
+		if st.DiskUsageUnknown > 0 {
+			usageNote = fmt.Sprintf(" · 使用率未确认 %d 块", st.DiskUsageUnknown)
+		}
+		fmt.Fprintf(tw, "硬盘\t%s\t%d 块 · %.1f/%.1f TB · 均用 %s%s\n",
+			diskVerdict, len(r.Drives), used, cap, usageBar(avg, 12), usageNote)
 	}
 	alarmVerdict := model.StatusOK
 	if len(r.Alarms) > 0 {

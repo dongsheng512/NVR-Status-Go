@@ -162,6 +162,7 @@ type HealthStats struct {
 	DiskBad           int    `json:"落盘异常"`
 	DiskUnknown       int    `json:"落盘未知"`
 	DiskSkip          int    `json:"落盘跳过"`
+	DiskUsageUnknown  int    `json:"硬盘使用率未知"`
 	DiskChecked       bool   `json:"落盘已检查"`
 	RecordingChecked  bool   `json:"录像已检查"`
 	VideoProbeOK      int    `json:"视频抽检正常"`

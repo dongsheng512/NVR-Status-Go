@@ -187,6 +187,7 @@ func summaryRows(r model.Report) [][2]any {
 		{"落盘正常", stats.DiskOK},
 		{"落盘异常", stats.DiskBad},
 		{"落盘未知", stats.DiskUnknown},
+		{"硬盘使用率未知", stats.DiskUsageUnknown},
 		{"视频抽检正常", stats.VideoProbeOK},
 		{"视频抽检异常", stats.VideoProbeBad},
 		{"音频抽检正常", stats.AudioProbeOK},

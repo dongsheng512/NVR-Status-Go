@@ -354,7 +354,9 @@ func (r *Runner) queueConcurrent(devices []model.Device, opt model.ScanOptions, 
 		progress(p)
 	}
 
-	jobs := make(chan int)
+	// Buffered so the producer never blocks on a worker, even if one dies.
+	// With <=4 devices this costs nothing and removes a whole class of hangs.
+	jobs := make(chan int, total)
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
@@ -366,25 +368,51 @@ func (r *Runner) queueConcurrent(devices []model.Device, opt model.ScanOptions, 
 				if name == "" {
 					name = fmt.Sprintf("设备%d", i+1)
 				}
-				emit(model.Progress{Message: fmt.Sprintf("—— [%d/%d] %s ——", i+1, total, name), Phase: "init", Overall: 0})
-				rep := r.runWith(dev, opt, name, func(p model.Progress) {
+				// Progress and onDevice are callbacks supplied by the caller.
+				// A panic in one of them would otherwise terminate the whole
+				// process: Go does not recover across goroutines, and the GUI's
+				// recover sits on the outer scan goroutine. Recover per job so
+				// the worker survives and the other devices still finish.
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							mu.Lock()
+							partial[i] = 1
+							if results[i].DeviceName == "" {
+								results[i] = model.Report{
+									DeviceName: name,
+									IP:         dev.IP,
+									Health:     model.HealthSummary{Status: model.StatusUnknown},
+									Error:      fmt.Sprintf("巡检内部错误: %v", r),
+								}
+							} else {
+								// The scan itself succeeded; only a callback
+								// failed. Keep the report and flag it.
+								results[i].Error = fmt.Sprintf("回调异常: %v", r)
+							}
+							mu.Unlock()
+						}
+					}()
+					emit(model.Progress{Message: fmt.Sprintf("—— [%d/%d] %s ——", i+1, total, name), Phase: "init", Overall: 0})
+					rep := r.runWith(dev, opt, name, func(p model.Progress) {
+						mu.Lock()
+						partial[i] = clampFloat(p.Overall)
+						mu.Unlock()
+						emit(p)
+					}, onNVR, workers)
 					mu.Lock()
-					partial[i] = clampFloat(p.Overall)
+					partial[i] = 1
+					results[i] = rep
 					mu.Unlock()
-					emit(p)
-				}, onNVR, workers)
-				mu.Lock()
-				partial[i] = 1
-				mu.Unlock()
-				results[i] = rep
-				if onDevice != nil {
-					onDevice(rep)
-				}
-				emit(model.Progress{Message: fmt.Sprintf("完成 [%d/%d] %s", i+1, total, name), Phase: "done"})
+					if onDevice != nil {
+						onDevice(rep)
+					}
+					emit(model.Progress{Message: fmt.Sprintf("完成 [%d/%d] %s", i+1, total, name), Phase: "done"})
+				}()
 			}
 		}()
 	}
-	for i := range devices {
+	for i := range total {
 		jobs <- i
 	}
 	close(jobs)

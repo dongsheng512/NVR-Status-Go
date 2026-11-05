@@ -15,8 +15,17 @@ signature, and arm64 refuses to load unsigned code).
 Output is gitignored; the bundle is built locally, never committed.
 
 Usage:
-    python3 scripts/bundle-ffmpeg.py            # bundle into resources/darwin/bin
-    python3 scripts/bundle-ffmpeg.py --check    # only report what would be bundled
+    python3 scripts/bundle-ffmpeg.py                  # bundle into resources/darwin/bin
+    python3 scripts/bundle-ffmpeg.py --check          # only report what would be bundled
+    python3 scripts/bundle-ffmpeg.py --require-ffmpeg # fail instead of skipping (CI)
+
+On a machine without ffmpeg (a fresh clone, or a CI runner before brew install),
+the default is to warn and skip rather than fail `make app`: the build still
+produces a working .app, just one whose deep AV checks are disabled. CI should
+pass --require-ffmpeg so a missing tool can never be published silently.
+
+NVR_FFMPEG_BIN overrides the extra search paths, as a colon-separated list; set
+it to a nonexistent path to exercise the skip path on a machine that has ffmpeg.
 """
 
 from __future__ import annotations
@@ -34,7 +43,14 @@ DEFAULT_DEST = os.path.join(ROOT, "resources", "darwin", "bin")
 SYSTEM_PREFIXES = ("/usr/lib/", "/System/")
 
 # Fallbacks for when the tool is installed but not on this shell's PATH.
-EXTRA_SEARCH = ("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin")
+# Overridable so CI can point at a known prefix (and tests can hide ffmpeg).
+EXTRA_SEARCH = tuple(
+    p
+    for p in os.environ.get(
+        "NVR_FFMPEG_BIN", "/opt/homebrew/bin:/usr/local/bin:/opt/local/bin"
+    ).split(os.pathsep)
+    if p
+)
 
 
 def die(msg: str) -> None:
@@ -42,7 +58,7 @@ def die(msg: str) -> None:
     raise SystemExit(1)
 
 
-def which(name: str) -> str:
+def which(name: str) -> str | None:
     found = shutil.which(name)
     if found:
         return os.path.realpath(found)
@@ -50,7 +66,7 @@ def which(name: str) -> str:
         cand = os.path.join(d, name)
         if os.path.isfile(cand) and os.access(cand, os.X_OK):
             return os.path.realpath(cand)
-    die(f"{name} not found; install ffmpeg first (brew install ffmpeg)")
+    return None
 
 
 def load_commands(path: str) -> list[str]:
@@ -146,12 +162,33 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dest", default=DEFAULT_DEST)
     ap.add_argument("--check", action="store_true", help="report without writing")
+    ap.add_argument(
+        "--require-ffmpeg",
+        action="store_true",
+        help="fail when ffmpeg/ffprobe are missing, instead of skipping the bundle",
+    )
     args = ap.parse_args()
 
     if sys.platform != "darwin":
         die("this script only makes sense on macOS")
 
-    roots = [which("ffmpeg"), which("ffprobe")]
+    ffmpeg, ffprobe = which("ffmpeg"), which("ffprobe")
+    missing = [
+        name for name, path in (("ffmpeg", ffmpeg), ("ffprobe", ffprobe)) if path is None
+    ]
+    if missing:
+        found = "未找到 " + "/".join(missing)
+        hint = "装好 ffmpeg 后重跑 make ffmpeg"
+        if args.require_ffmpeg:
+            die(found + f"；--require-ffmpeg 要求必须捆绑，构建中止。{hint}")
+        print(
+            "warning: " + found + "，跳过 ffmpeg 捆绑；本次 .app 不带 ffmpeg，"
+            f"深度抽检会降级。{hint}，或在 CI 里用 --require-ffmpeg 强制检查",
+            file=sys.stderr,
+        )
+        return 0
+
+    roots = [ffmpeg, ffprobe]
     libs, refmap = collect(roots)
     total = sum(os.path.getsize(p) for p in roots) + sum(
         os.path.getsize(p) for p in libs.values()

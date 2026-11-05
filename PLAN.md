@@ -82,7 +82,7 @@ M8  测试迁移 + 真机回归 + 打包     2–3 周
 > 同步的兜底成本很低：CLI 只是 `internal/scan` 的一层薄封装，业务改动都在 `internal/` 下自动继承；
 > 唯一会漂移的是 `ScanOptions` 新增字段，已由 `cmd/nvr/parity_test.go` 与 `release_test.go` 卡住。
 
-- [x] `internal/health`：`chanDetectResult` 白名单、双「未知」口径、严重度聚合（84 个子用例）
+- [x] `internal/health`：`chanDetectResult` 白名单、三处「未知」比例口径（落盘 / 音频抽检 / 硬盘使用率）、严重度聚合（84 个子用例）
 - [x] `internal/scan`：`Build`（选项 → NVR）、`Run`（编排+进度）、`Queue`（多设备）、`RunSingleAV`
 - [x] `cmd/nvr`：全部参数（`--lookback`、`--deep-av-check`、`--av-channels`、`--av-at`、`--av-save`…）
 - [x] 终端报告、退出码 0/1/2

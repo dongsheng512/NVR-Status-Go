@@ -34,7 +34,8 @@ run: app
 	open -n "$(APP)"
 
 # 重新生成 resources/darwin/bin（依赖闭包 + @loader_path 改写 + ad-hoc 签名）。
-# 产物被 .gitignore 忽略；换了 ffmpeg 版本后重跑一次。
+# 产物被 .gitignore 忽略；换了 ffmpeg 版本后重跑一次。本机没有 ffmpeg 时脚本
+# 会警告并跳过，不会阻断打包——CI 应改用 scripts/bundle-ffmpeg.py --require-ffmpeg。
 ffmpeg:
 	python3 scripts/bundle-ffmpeg.py
 

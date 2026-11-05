@@ -177,11 +177,18 @@ func Summarize(cameras []model.Camera, records []model.Record, drives []model.Dr
 	badDrives := 0
 	fullDrives := 0
 	sleepingDrives := 0
+	diskUsageUnknown := 0
 	for _, d := range drives {
 		if driveStatusBad(d.Status) {
 			badDrives++
 		}
-		if pct, ok := util.ParsePercent(d.Usage); ok && pct >= fullDriveUsagePct {
+		// A drive whose usage string cannot be parsed is not a healthy drive:
+		// it is an unconfirmed one. Count it so partial failures stay visible;
+		// the verdict below only escalates when every returned drive failed.
+		pct, ok := util.ParsePercent(d.Usage)
+		if !ok {
+			diskUsageUnknown++
+		} else if pct >= fullDriveUsagePct {
 			fullDrives++
 		}
 		switch strings.ToLower(strings.TrimSpace(d.Status)) {
@@ -213,6 +220,13 @@ func Summarize(cameras []model.Camera, records []model.Record, drives []model.Dr
 	}
 	if sleepingDrives > 0 {
 		warn("%d块硬盘处于休眠状态", sleepingDrives)
+	}
+	// 「硬盘使用率未知」与「落盘未知」「音频抽检未知」同口径：部分读不出来
+	// （固件换了个写法）只进统计；实际返回的盘全部解析失败才视为整体读取
+	// 失败，升警告。不新增严重度级别。
+	if diskUsageUnknown > 0 && diskUsageUnknown >= len(drives) {
+		raise(statusWarning)
+		warn("%d块硬盘使用率无法解析(整体读取失败，容量状态未确认)", diskUsageUnknown)
 	}
 
 	// ── 摄像头在线检查 ──────────────────────────────────────
@@ -311,6 +325,7 @@ func Summarize(cameras []model.Camera, records []model.Record, drives []model.Dr
 		DeepAV:           deepAV,
 		OverwriteLabel:   owLabel,
 		OverwriteEnabled: owEnabled,
+		DiskUsageUnknown: diskUsageUnknown,
 		DiskChecked:      diskChecked,
 		RecordingChecked: diskChecked,
 	}
@@ -416,8 +431,8 @@ func Summarize(cameras []model.Camera, records []model.Record, drives []model.Dr
 				}
 			}
 
-			// 「落盘未知」口径（与「音频抽检未知」一致）：部分未知不降级，
-			// 仅当实际检索到的通道全部未知（整体检索失败）才升级为警告。
+			// 「落盘未知」口径（与「音频抽检未知」「硬盘使用率未知」一致）：
+			// 部分未知不降级，仅当实际检索到的通道全部未知（整体失败）才升级为警告。
 			diskAttempted := stats.DiskOK + stats.DiskBad + stats.DiskUnknown
 			if stats.DiskUnknown > 0 && diskAttempted > 0 && stats.DiskUnknown >= diskAttempted {
 				raise(statusWarning)

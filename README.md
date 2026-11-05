@@ -79,6 +79,10 @@ go tool mygo build        # 不捆 ffmpeg 的裸包，仅供快速迭代
   `@loader_path/`，再逐个 ad-hoc 重签（改 load command 会让签名失效，arm64 拒绝加载）
 - 脚本自我校验：任何文件残留绝对路径就报错退出，并把两个二进制真跑一次 `-version`
 - 产物在 `.gitignore` 里，不进仓库；换了 ffmpeg 版本重跑 `make ffmpeg`
+- **本机没装 ffmpeg 时默认警告并跳过**，不阻断 `make app`（fresh clone / CI 装依赖前也能出包），
+  只是这个 `.app` 的深度抽检会降级。CI 里用
+  `python3 scripts/bundle-ffmpeg.py --require-ffmpeg` 强制检查，避免"忘了装"被悄悄发布。
+  可用 `NVR_FFMPEG_BIN` 覆盖额外搜索路径（冒号分隔）
 
 代价是 `.app` 从 11.6 MB 涨到 49.4 MB（dmg 16.1 MB）。注意本机 Homebrew 的 ffmpeg 是
 `--enable-gpl` 构建，对外分发要遵守 GPL。
@@ -86,7 +90,7 @@ go tool mygo build        # 不捆 ffmpeg 的裸包，仅供快速迭代
 ## 与 Python v2.3.0 的关系（历史）
 
 - 配置格式、用户数据目录（`~/Library/Application Support/NVRStatus`、`%APPDATA%\NVRStatus`）保持兼容；已有的 `profiles.json`、历史报告 `reports/`、系统钥匙串密码可直接沿用。
-- CLI 参数与报告字段沿用 v2.3.0 的命名，方便老用户过渡；健康判定口径（`chanDetectResult` 白名单、双「未知」比例口径）以当前 Go 实现为准，**不再要求与 Python 逐字一致**。
+- CLI 参数与报告字段沿用 v2.3.0 的命名，方便老用户过渡；健康判定口径（`chanDetectResult` 白名单，以及「落盘未知」「音频抽检未知」「硬盘使用率未知」三处同用的比例口径）以当前 Go 实现为准，**不再要求与 Python 逐字一致**。
 - 音频判定有两处按实测修正过（电平未测到 / 配置未知且无音轨不再误判为「正常」「异常」），原因见 [移植分析 §7](docs/python-port-analysis-2026-11-04.md)。那是现行口径，不是待对齐的差异。
 - 本仓库于 2026-11-04 新建为干净的 Go 版主线，**不带 v2.x 的提交历史、tag 与 release**；与 Python 版仓库是**两个独立仓库**，不是分支、不是 fork。
 - 后续功能开发、issue 与发布都以本仓库为准；Python 版不再参与验收。

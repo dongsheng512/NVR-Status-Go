@@ -279,12 +279,13 @@ func TestCameraOnlineVerdicts(t *testing.T) {
 
 func TestDriveChecks(t *testing.T) {
 	tests := []struct {
-		name          string
-		drives        []model.Drive
-		overwrite     model.DiskOverwrite
-		wantStatus    string
-		wantWarnings  []string
-		wantNoWarning bool
+		name             string
+		drives           []model.Drive
+		overwrite        model.DiskOverwrite
+		wantStatus       string
+		wantWarnings     []string
+		wantNoWarning    bool
+		wantUsageUnknown int
 	}{
 		{
 			name:         "bad status is severe",
@@ -350,18 +351,36 @@ func TestDriveChecks(t *testing.T) {
 			wantNoWarning: true,
 		},
 		{
-			name:          "unknown usage is not full",
-			drives:        []model.Drive{drive("hdd1", "ok", "未知")},
-			overwrite:     overwriteEnabled(),
-			wantStatus:    statusGood,
-			wantNoWarning: true,
+			name:             "unknown usage is counted and warns when it is the only drive",
+			drives:           []model.Drive{drive("hdd1", "ok", "未知")},
+			overwrite:        overwriteEnabled(),
+			wantStatus:       statusWarning,
+			wantWarnings:     []string{"1块硬盘使用率无法解析"},
+			wantUsageUnknown: 1,
 		},
 		{
-			name:          "missing usage is not full",
-			drives:        []model.Drive{drive("hdd1", "ok", "")},
-			overwrite:     overwriteEnabled(),
-			wantStatus:    statusGood,
-			wantNoWarning: true,
+			name:             "missing usage is counted and warns when it is the only drive",
+			drives:           []model.Drive{drive("hdd1", "ok", "")},
+			overwrite:        overwriteEnabled(),
+			wantStatus:       statusWarning,
+			wantWarnings:     []string{"1块硬盘使用率无法解析"},
+			wantUsageUnknown: 1,
+		},
+		{
+			name:             "partial unknown usage stays in stats without a verdict",
+			drives:           []model.Drive{drive("hdd1", "ok", "50%"), drive("hdd2", "ok", "坏文本")},
+			overwrite:        overwriteEnabled(),
+			wantStatus:       statusGood,
+			wantNoWarning:    true,
+			wantUsageUnknown: 1,
+		},
+		{
+			name:             "all drives unparsable is an overall read failure",
+			drives:           []model.Drive{drive("hdd1", "ok", "N/A"), drive("hdd2", "ok", "?")},
+			overwrite:        overwriteEnabled(),
+			wantStatus:       statusWarning,
+			wantWarnings:     []string{"2块硬盘使用率无法解析"},
+			wantUsageUnknown: 2,
 		},
 		{
 			name:         "full disk without overwrite is severe",
@@ -390,6 +409,9 @@ func TestDriveChecks(t *testing.T) {
 			summary := Summarize(nil, nil, tt.drives, tt.overwrite, false)
 			if summary.Status != tt.wantStatus {
 				t.Fatalf("status = %q, want %q (warnings=%v)", summary.Status, tt.wantStatus, summary.Warnings)
+			}
+			if summary.Stats.DiskUsageUnknown != tt.wantUsageUnknown {
+				t.Fatalf("DiskUsageUnknown = %d, want %d", summary.Stats.DiskUsageUnknown, tt.wantUsageUnknown)
 			}
 			for _, want := range tt.wantWarnings {
 				if !containsWarning(summary.Warnings, want) {
