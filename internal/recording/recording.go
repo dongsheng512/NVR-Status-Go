@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"html"
+	randv2 "math/rand/v2"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,6 +55,9 @@ type Service struct {
 	Progress func(model.Progress)
 	Log      func(msg string)
 	Now      func() time.Time
+	// RandInt64N is injectable for deterministic tests. It must return a
+	// value in [0,n). Nil uses math/rand/v2's process-wide source.
+	RandInt64N func(n int64) int64
 
 	// DeepCheck is wired by the orchestrator to the avprobe package to avoid
 	// an import cycle. It performs the deep audio/video checks in place.
@@ -78,6 +82,23 @@ func (s *Service) now() time.Time {
 		return s.Now()
 	}
 	return time.Now()
+}
+
+func (s *Service) randomInt64N(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	if s.RandInt64N != nil {
+		v := s.RandInt64N(n)
+		if v < 0 {
+			return 0
+		}
+		if v >= n {
+			return n - 1
+		}
+		return v
+	}
+	return randv2.Int64N(n)
 }
 
 func (s *Service) log(msg string) {
@@ -609,10 +630,19 @@ func (s *Service) PickBusyClipTimes(seconds int, at *time.Time) (time.Time, time
 	}
 	// 优先时段就是用户指定「最该抽的那段」。以前这里钉死在 14:00，只要
 	// 14:00 落在窗口内，改起止时间完全不改变抽检点（设 9-18 与 10-20 得到
-	// 同一个 14:00:00），看起来就像设置没生效。改取实际窗口的中点：一定在
-	// [ws, we] 内，且随起止设置线性变化。
-	peak := ws.Add(we.Sub(ws) / 2)
-	where := "优先时段中点"
+	// 同一个 14:00:00），看起来就像设置没生效。现在在实际可抽检窗口
+	// [ws, we] 内随机取一个能容纳完整片段的起点，不再取固定中点。
+	clipLen := time.Duration(sec) * time.Second
+	maxStart := we.Sub(ws) - clipLen
+	offset := time.Duration(0)
+	if maxStart > 0 {
+		maxStartSec := int64(maxStart / time.Second)
+		if maxStartSec > 0 {
+			offset = time.Duration(s.randomInt64N(maxStartSec+1)) * time.Second
+		}
+	}
+	peak := ws.Add(offset)
+	where := "优先时段随机点"
 	clipE := peak.Add(time.Duration(sec) * time.Second)
 	if we.Before(clipE) {
 		clipE = we

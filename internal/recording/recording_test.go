@@ -165,15 +165,16 @@ func TestBusyWindowAndPick(t *testing.T) {
 }
 
 // The preferred hours used to be cosmetic: a hard-coded 14:00 anchor meant
-// 9-18 and 10-20 produced the exact same probe instant. Changing the window
-// must now change the sampled instant, and it must stay inside the window.
+// 9-18 and 10-20 produced the exact same probe instant. The probe point is now
+// random within the window; deterministic RandInt64N keeps this test stable.
 func TestPickBusyClipTimesFollowsPreferredHours(t *testing.T) {
 	now := time.Date(2026, 11, 5, 17, 20, 0, 0, time.Local)
 	seen := map[string]bool{}
 	for _, tc := range []struct{ sh, eh int }{
 		{9, 18}, {10, 20}, {11, 13}, {0, 10},
 	} {
-		s := &Service{BusyStartHour: tc.sh, BusyEndHour: tc.eh, Now: func() time.Time { return now }}
+		s := &Service{BusyStartHour: tc.sh, BusyEndHour: tc.eh, Now: func() time.Time { return now },
+			RandInt64N: func(n int64) int64 { return n / 2 }}
 		ws, we, _ := s.BusyHoursWindow()
 		cs, ce, label := s.PickBusyClipTimes(6, nil)
 		if cs.Before(ws) || ce.After(we) {
@@ -190,8 +191,26 @@ func TestPickBusyClipTimesFollowsPreferredHours(t *testing.T) {
 			t.Fatalf("%d-%d produced the same probe instant %s as an earlier window", tc.sh, tc.eh, key)
 		}
 		seen[key] = true
-		if !strings.Contains(label, "优先时段中点") {
+		if !strings.Contains(label, "优先时段随机点") {
 			t.Fatalf("%d-%d: label = %q", tc.sh, tc.eh, label)
+		}
+	}
+}
+
+func TestPickBusyClipTimesRandomizesWithinWindow(t *testing.T) {
+	now := time.Date(2026, 11, 5, 17, 20, 0, 0, time.Local)
+	ws, we, _ := (&Service{BusyStartHour: 9, BusyEndHour: 18, Now: func() time.Time { return now }}).BusyHoursWindow()
+	for _, pick := range []func(int64) int64{
+		func(n int64) int64 { return 0 },     // earliest legal start
+		func(n int64) int64 { return n - 1 }, // latest legal start
+	} {
+		s := &Service{BusyStartHour: 9, BusyEndHour: 18, Now: func() time.Time { return now }, RandInt64N: pick}
+		cs, ce, label := s.PickBusyClipTimes(6, nil)
+		if cs.Before(ws) || ce.After(we) || ce.Sub(cs) != 6*time.Second {
+			t.Fatalf("random clip %v..%v outside %v..%v", cs, ce, ws, we)
+		}
+		if !strings.Contains(label, "优先时段随机点") {
+			t.Fatalf("label = %q", label)
 		}
 	}
 }

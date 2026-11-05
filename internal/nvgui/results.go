@@ -193,11 +193,17 @@ func (a *App) metrics(c *ui.Context, t *ui.Theme) {
 		a.metricCard(c, t, "落盘", fmt.Sprintf("%d/%d", st.DiskOK, diskCheckedCount(st)),
 			joinNonZero("异常", st.DiskBad, "未知", st.DiskUnknown, "跳过", st.DiskSkip), toneForCount(st.DiskBad))
 		driveTip := a.report.DiskOverwrite.Label
+		driveTone := overwriteTone(a.report.DiskOverwrite.Enabled)
 		if st.DiskUsageUnknown > 0 {
 			driveTip = fmt.Sprintf("%s · 使用率未确认 %d 块", driveTip, st.DiskUsageUnknown)
+			if st.DiskUsageUnknown >= len(a.report.Drives) {
+				driveTone = model.StatusWarn
+			} else {
+				driveTone = model.StatusUnknown
+			}
 		}
 		a.metricCard(c, t, "硬盘", fmt.Sprintf("%d 块", len(a.report.Drives)),
-			driveTip, overwriteTone(a.report.DiskOverwrite.Enabled))
+			driveTip, driveTone)
 	})
 }
 

@@ -232,6 +232,15 @@ func RenderDevice(w io.Writer, r *model.Report, verbose bool) {
 				diskVerdict = model.StatusBad
 			}
 		}
+		// Health already treats unreadable usage as an unknown/whole-read
+		// failure; the drive row must not contradict it with a green "正常".
+		if st.DiskUsageUnknown > 0 && diskVerdict == model.StatusOK {
+			if st.DiskUsageUnknown >= len(r.Drives) {
+				diskVerdict = model.StatusWarn
+			} else {
+				diskVerdict = model.StatusUnknown
+			}
+		}
 		usageNote := ""
 		if st.DiskUsageUnknown > 0 {
 			usageNote = fmt.Sprintf(" · 使用率未确认 %d 块", st.DiskUsageUnknown)

@@ -269,6 +269,13 @@ func (a *App) options() model.ScanOptions {
 }
 
 func (a *App) syncFormFromOptions() {
+	// Saving clips is a deep-AV feature: scan.Build treats AVSave as an
+	// implicit deep switch. Normalize the persisted state so the dialog and
+	// the actual scan cannot disagree when an older profile has AVSave=true
+	// but DeepAVCheck=false.
+	if a.opt.AVSave {
+		a.opt.DeepAVCheck = true
+	}
 	o := a.opt
 	a.lookbackUnit = "分钟"
 	value := float64(o.Lookback)

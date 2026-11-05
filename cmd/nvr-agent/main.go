@@ -47,6 +47,9 @@ type agentArgs struct {
 	lookback      int
 	avSeconds     int
 	avWorkers     int
+	// set records flags explicitly provided on the command line, so profile
+	// settings are kept when a flag is omitted.
+	set map[string]bool
 }
 
 func parseArgs(argv []string) (*agentArgs, error) {
@@ -78,6 +81,8 @@ func parseArgs(argv []string) (*agentArgs, error) {
 	if err := fs.Parse(argv); err != nil {
 		return nil, err
 	}
+	a.set = map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { a.set[f.Name] = true })
 	return a, nil
 }
 
@@ -90,7 +95,7 @@ func run(argv []string) int {
 		return 2
 	}
 
-	devices, name, err := loadDevices(a.configPath, a.profile)
+	devices, name, profileOpts, err := loadConfig(a.configPath, a.profile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "读取配置失败:", err)
 		return 1
@@ -99,14 +104,7 @@ func run(argv []string) int {
 		fmt.Fprintln(os.Stderr, "没有可巡检设备")
 		return 1
 	}
-	opts := model.DefaultScanOptions()
-	opts.NoSearch = a.noSearch
-	opts.DeepAVCheck = a.deep
-	opts.DeviceWorkers = a.deviceWorkers
-	opts.Workers = a.workers
-	opts.Lookback = a.lookback
-	opts.AVSeconds = a.avSeconds
-	opts.AVWorkers = a.avWorkers
+	opts := resolveOptions(a, profileOpts)
 
 	// SIGTERM/SIGINT must abort the running round instead of waiting for it:
 	// the context reaches every ISAPI request and kills ffmpeg children.
@@ -300,30 +298,68 @@ func isLoopbackAddr(addr string) (bool, error) {
 	return ip.IsLoopback(), nil
 }
 
-func loadDevices(configPath, profile string) ([]model.Device, string, error) {
+func loadConfig(configPath, profile string) ([]model.Device, string, model.ScanOptions, error) {
 	if configPath != "" {
 		data, err := os.ReadFile(configPath)
 		if err != nil {
-			return nil, "", err
+			return nil, "", model.DefaultScanOptions(), err
 		}
 		var legacy struct {
 			Devices []model.Device `json:"devices"`
 		}
 		if err := json.Unmarshal(data, &legacy); err != nil {
-			return nil, "", err
+			return nil, "", model.DefaultScanOptions(), err
 		}
-		return legacy.Devices, filepath.Base(configPath), nil
+		return legacy.Devices, filepath.Base(configPath), model.DefaultScanOptions(), nil
 	}
 	st := config.New("")
 	if err := st.Load(); err != nil {
-		return nil, "", err
+		return nil, "", model.DefaultScanOptions(), err
 	}
 	name := profile
 	if name == "" {
 		name = st.ActiveName()
 	}
+	prof, err := st.GetProfile(name)
+	if err != nil {
+		return nil, "", model.DefaultScanOptions(), err
+	}
 	devices, err := st.ResolveDevices(name)
-	return devices, name, err
+	if err != nil {
+		return nil, "", model.DefaultScanOptions(), err
+	}
+	return devices, name, prof.ScanOptions, nil
+}
+
+// resolveOptions starts from the profile's scan_options so the scheduled agent
+// behaves like the GUI, then applies only flags the user actually provided.
+func resolveOptions(a *agentArgs, profileOpts model.ScanOptions) model.ScanOptions {
+	opts := profileOpts
+	if a.set == nil {
+		return opts
+	}
+	if a.set["no-search"] {
+		opts.NoSearch = a.noSearch
+	}
+	if a.set["deep-av-check"] {
+		opts.DeepAVCheck = a.deep
+	}
+	if a.set["device-workers"] {
+		opts.DeviceWorkers = a.deviceWorkers
+	}
+	if a.set["workers"] {
+		opts.Workers = a.workers
+	}
+	if a.set["lookback"] {
+		opts.Lookback = a.lookback
+	}
+	if a.set["av-seconds"] {
+		opts.AVSeconds = a.avSeconds
+	}
+	if a.set["av-workers"] {
+		opts.AVWorkers = a.avWorkers
+	}
+	return opts
 }
 
 func webhookPayload(snap monitor.Snapshot) ([]byte, error) {

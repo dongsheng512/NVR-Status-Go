@@ -72,3 +72,18 @@ func TestRenderErrorReport(t *testing.T) {
 		t.Fatalf("unexpected: %s", buf.String())
 	}
 }
+
+func TestRenderDiskUsageUnknownIsNotGreen(t *testing.T) {
+	var buf bytes.Buffer
+	r := sampleReport()
+	r.Health.Stats.DiskUsageUnknown = 1
+	r.Drives[0].Usage = "未知"
+	RenderDevice(&buf, &r, false)
+	out := buf.String()
+	if !strings.Contains(out, "使用率未确认 1 块") {
+		t.Fatalf("missing unknown usage note:\n%s", out)
+	}
+	if strings.Contains(out, "硬盘\t正常") {
+		t.Fatalf("disk row says 正常 while usage is unknown:\n%s", out)
+	}
+}
