@@ -195,17 +195,60 @@ func (a *App) settingsDeepAV(c *ui.Context, t *ui.Theme) {
 					columnField(c, t, "", func() {
 						ui.Checkbox(c.Key("av-save"), &a.opt.AVSave, "保存抽检片段到本机").FontSize(11)
 					})
-					// Always present: showing it only when checked added a row
-					// and made the dialog jump. Disabled instead of hidden.
-					ui.Column(c).Disabled(!a.opt.AVSave).Children(func() {
-						columnField(c, t, "保存目录", func() {
-							ui.TextInput(c.Key("save-root"), &a.saveRoot).
-								Placeholder("留空使用默认目录").Width(150)
-						})
-					})
 				})
+			// The path needs room to be readable, so it spans the group instead
+			// of squeezing into the 240pt right column. Always present, disabled
+			// rather than hidden, so checking the box does not change the height.
+			ui.Column(c).Disabled(!a.opt.AVSave).Children(func() {
+				settingField(c, t, "保存目录", func() {
+					ui.TextInput(c.Key("save-root"), &a.saveRoot).
+						Placeholder("留空使用默认目录（应用数据目录/av_samples）").Grow(1)
+					ui.Button(c.Key("save-root-browse"), "选择…").Shrink(0).
+						Tooltip("选择保存抽检片段的文件夹").OnClick(a.chooseSaveRoot)
+				})
+			})
 		})
 	})
+}
+
+// chooseSaveRoot opens the native folder picker off the UI thread, the same way
+// importProfile/exportProfile do: Dialog.Open posts to the main loop and waits,
+// so calling it on the UI thread would stall the window.
+// openFolderDialog is an indirection so the picker can be stubbed in tests.
+var openFolderDialog = mygo.Dialog.Open
+
+func (a *App) chooseSaveRoot() {
+	current := a.saveRoot // capture before the goroutine to avoid a data race
+	go a.pickSaveRoot(current)
+}
+
+// pickSaveRoot is the synchronous body of the picker, split out so tests can
+// drive it without spawning a goroutine or opening a native window.
+func (a *App) pickSaveRoot(current string) {
+	paths, err := openFolderDialog(mygo.OpenDialogOptions{
+		Title:             "选择抽检片段保存目录",
+		ButtonLabel:       "选择",
+		Message:           "抽检片段会保存在这个文件夹中；留空则使用应用数据目录。",
+		DefaultPath:       current,
+		Directory:         true,
+		CreateDirectories: true,
+	})
+	if err != nil || len(paths) == 0 {
+		return
+	}
+	a.post(func() { a.applySaveRoot(paths[0]) })
+}
+
+// applySaveRoot is kept separate from the picker so it can be tested without a
+// native dialog. Settings are saved on close too, but persisting here means the
+// choice survives an app crash before the user presses 完成.
+func (a *App) applySaveRoot(path string) {
+	if path == "" {
+		return
+	}
+	a.saveRoot = path
+	a.saveProfile()
+	a.logf("已设置保存目录："+path, "ok")
 }
 
 // settingsGroup boxes related fields under a title, the way macOS groups a
