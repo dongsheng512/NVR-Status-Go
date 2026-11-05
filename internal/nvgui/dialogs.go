@@ -73,75 +73,25 @@ func (a *App) settingsDialog(c *ui.Context, t *ui.Theme) {
 	}
 	open := true
 	ui.Modal(c, &open, func() {
-		ui.Column(c).Width(620).Gap(12).Children(func() {
+		ui.Column(c).Width(560).Gap(14).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "扫描设置").FontSize(15).Bold()
 				ui.Spacer(c)
 				if a.ffmpegAvailable() {
 					ui.Badge(c, "ffmpeg 可用")
 				} else {
-					ui.Badge(c, "ffmpeg 缺失")
+					ui.Badge(c, "ffmpeg 缺失").Tooltip("未找到 ffmpeg/ffprobe，深度抽检将自动降级")
 				}
 			})
-			ui.Scroll(c).Height(500).Children(func() {
-				ui.Column(c).Gap(14).Children(func() {
-					ui.Text(c, "基础").FontSize(12).Bold().TextColor(t.TextMuted)
-					settingField(c, t, "回溯窗口", func() {
-						ui.Row(c).Gap(8).Children(func() {
-							numberField(c, "lookback", &a.lookbackValue, 1, 43200, 1).Width(130)
-							ui.Select(c.Key("lookback-unit"), &a.lookbackUnit, []string{"分钟", "小时", "天"}).Width(100)
-						})
-					})
-					settingField(c, t, "落盘检查并发", func() {
-						numberField(c, "workers", &a.workers, 1, 16, 1).Width(130)
-					})
-					settingField(c, t, "设备并发（1–4）", func() {
-						numberField(c, "device-workers", &a.deviceWorkers, 1, 4, 1).Width(130)
-					})
-					ui.Checkbox(c.Key("no-search"), &a.opt.NoSearch, "跳过落盘检索（最快，仅查计划与音频配置）")
-
-					ui.Divider(c)
-					ui.Text(c, "深度音视频抽检").FontSize(12).Bold().TextColor(t.TextMuted)
-					ui.Checkbox(c.Key("deep"), &a.opt.DeepAVCheck, "启用短时 RTSP 音视频抽检")
-					if a.opt.DeepAVCheck {
-						ui.Row(c).Gap(16).Children(func() {
-							ui.Column(c).Grow(1).Gap(10).Children(func() {
-								settingField(c, t, "每路抽检时长（秒，3–12）", func() {
-									numberField(c, "av-seconds", &a.avSeconds, 3, 12, 1).Width(130)
-								})
-								settingField(c, t, "抽检并发（1–3）", func() {
-									numberField(c, "av-workers", &a.avWorkers, 1, 3, 1).Width(130)
-								})
-								settingField(c, t, "最多抽检通道（0=全部）", func() {
-									numberField(c, "av-limit", &a.avLimit, 0, 256, 1).Width(130)
-								})
-								settingField(c, t, "静音阈值（dB）", func() {
-									numberField(c, "silence", &a.silenceDB, -100, 0, 1).Width(130)
-								})
-							})
-							ui.Column(c).Grow(1).Gap(10).Children(func() {
-								ui.Row(c).Gap(12).Children(func() {
-									ui.Column(c).Grow(1).Gap(3).Children(func() {
-										ui.Text(c, "优先时段开始").FontSize(10).TextColor(t.TextMuted)
-										numberField(c, "busy-start", &a.busyStart, 0, 23, 1).Width(110)
-									})
-									ui.Column(c).Grow(1).Gap(3).Children(func() {
-										ui.Text(c, "优先时段结束").FontSize(10).TextColor(t.TextMuted)
-										numberField(c, "busy-end", &a.busyEnd, 1, 24, 1).Width(110)
-									})
-								})
-								settingField(c, t, "抽检日（0=今天，1=昨天）", func() {
-									numberField(c, "busy-days", &a.busyDaysAgo, 0, 30, 1).Width(130)
-								})
-								ui.Checkbox(c.Key("av-save"), &a.opt.AVSave, "保存抽检片段到本机")
-								if a.opt.AVSave {
-									settingField(c, t, "保存目录", func() {
-										ui.TextInput(c.Key("save-root"), &a.saveRoot).Placeholder("默认：应用数据目录/av_samples")
-									})
-								}
-							})
-						})
-					}
+			// MaxHeight rather than a fixed Height: the dialog is as tall as its
+			// content and only scrolls when the window is too short for it. The
+			// bound has to clear the tallest state (deep check + saving samples,
+			// which adds the save-dir row), or the last row is clipped with no
+			// scrollbar to hint that there is more.
+			ui.Scroll(c).MaxHeight(510).Children(func() {
+				ui.Column(c).Gap(12).Children(func() {
+					a.settingsBasics(c, t)
+					a.settingsDeepAV(c, t)
 				})
 			})
 			ui.Row(c).Gap(8).Children(func() {
@@ -160,11 +110,126 @@ func (a *App) settingsDialog(c *ui.Context, t *ui.Theme) {
 	}
 }
 
-func settingField(c *ui.Context, t *ui.Theme, label string, control func()) {
-	ui.Column(c).Gap(3).Children(func() {
-		ui.Text(c, label).FontSize(10).TextColor(t.TextMuted)
-		control()
+// settingsBasics is the first group: what a scan reads, before any probing.
+func (a *App) settingsBasics(c *ui.Context, t *ui.Theme) {
+	settingsGroup(c, t, "基础", func() {
+		settingField(c, t, "回溯窗口", func() {
+			numberField(c, "lookback", &a.lookbackValue, 1, 43200, 1).Width(96)
+			ui.Select(c.Key("lookback-unit"), &a.lookbackUnit, []string{"分钟", "小时", "天"}).Width(84)
+		})
+		settingField(c, t, "落盘检查并发", func() {
+			numberField(c, "workers", &a.workers, 1, 16, 1).Width(96).Tooltip("1–16")
+		})
+		settingField(c, t, "设备并发", func() {
+			numberField(c, "device-workers", &a.deviceWorkers, 1, 4, 1).Width(96).Tooltip("1–4，同时巡检的 NVR 台数")
+		})
+		ui.Checkbox(c.Key("no-search"), &a.opt.NoSearch, "跳过落盘检索（最快，仅查计划与音频配置）").FontSize(11)
 	})
+}
+
+// settingsDeepAV is the second group. Everything below the switch stays in
+// place but disabled while deep checking is off: hiding it made the dialog jump
+// in height on every flip, and hid what enabling it would offer. The switch
+// itself must stay outside that block, or it could never be turned back on.
+func (a *App) settingsDeepAV(c *ui.Context, t *ui.Theme) {
+	deep := &a.opt.DeepAVCheck
+	settingsGroup(c, t, "深度音视频抽检", func() {
+		ui.Checkbox(c.Key("deep"), deep, "启用短时 RTSP 音视频抽检").FontSize(11).
+			Tooltip("需要 ffmpeg；缺失时自动降级").
+			OnChange(func() {
+				if !*deep {
+					a.opt.AVSave = false
+				}
+			})
+		ui.Column(c).Gap(4).Disabled(!*deep).Children(func() {
+			// Two columns for the bare numbers: one column of eight rows made
+			// the dialog taller than the window and clipped the last of them.
+			settingPair(c, t,
+				func() {
+					fieldRow(c, t, pairLabelW, "每路抽检时长", func() {
+						numberField(c, "av-seconds", &a.avSeconds, 3, 12, 1).Width(72).Tooltip("3–12 秒")
+						unitLabel(c, t, "秒")
+					})
+				},
+				func() {
+					fieldRow(c, t, pairLabelW, "抽检并发", func() {
+						numberField(c, "av-workers", &a.avWorkers, 1, 3, 1).Width(72).Tooltip("1–3")
+					})
+				})
+			settingPair(c, t,
+				func() {
+					fieldRow(c, t, pairLabelW, "最多抽检通道", func() {
+						numberField(c, "av-limit", &a.avLimit, 0, 256, 1).Width(72).Tooltip("0 表示全部")
+						unitLabel(c, t, "0 = 全部")
+					})
+				},
+				func() {
+					fieldRow(c, t, pairLabelW, "静音阈值", func() {
+						numberField(c, "silence", &a.silenceDB, -100, 0, 1).Width(72)
+						unitLabel(c, t, "dB")
+					})
+				})
+			settingField(c, t, "优先时段", func() {
+				numberField(c, "busy-start", &a.busyStart, 0, 23, 1).Width(72)
+				unitLabel(c, t, "–")
+				numberField(c, "busy-end", &a.busyEnd, 1, 24, 1).Width(72)
+				unitLabel(c, t, "时")
+			})
+			settingField(c, t, "抽检日", func() {
+				numberField(c, "busy-days", &a.busyDaysAgo, 0, 30, 1).Width(72)
+				unitLabel(c, t, "0 = 今天")
+			})
+			ui.Checkbox(c.Key("av-save"), &a.opt.AVSave, "保存抽检片段到本机").FontSize(11)
+			if a.opt.AVSave {
+				settingField(c, t, "保存目录", func() {
+					ui.TextInput(c.Key("save-root"), &a.saveRoot).
+						Placeholder("默认：应用数据目录/av_samples").Grow(1)
+				})
+			}
+		})
+	})
+}
+
+// settingsGroup boxes related fields under a title, the way macOS groups a
+// settings form. It keeps the dialog's own background: filling it would make it
+// read as one giant input, since controls are drawn on Surface too.
+func settingsGroup(c *ui.Context, t *ui.Theme, title string, body func()) {
+	ui.Column(c).Gap(8).Padding(12).Radius(t.Radius).Border(1, t.Border).Children(func() {
+		ui.Text(c, title).FontSize(12).Bold().TextColor(t.TextMuted)
+		body()
+	})
+}
+
+// pairLabelW is the label column of a settingsPair half: narrower than a full
+// row's, since half the dialog holds two of them.
+const pairLabelW = 78
+
+func settingField(c *ui.Context, t *ui.Theme, label string, control func()) {
+	fieldRow(c, t, 104, label, control)
+}
+
+// fieldRow puts a label in a fixed column with its controls beside it, so
+// controls line up down the dialog. Stacking a label above every field cost two
+// lines each and left most of the dialog width empty.
+func fieldRow(c *ui.Context, t *ui.Theme, labelW float32, label string, control func()) {
+	ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+		ui.Text(c, label).FontSize(11).TextColor(t.TextMuted).Width(labelW).SingleLine()
+		ui.Row(c).Grow(1).Gap(6).AlignItems(ui.Center).Children(control)
+	})
+}
+
+// settingPair lays two fields side by side, each taking half the group.
+func settingPair(c *ui.Context, t *ui.Theme, left, right func()) {
+	ui.Row(c).Gap(16).Children(func() {
+		ui.Column(c).Grow(1).Children(left)
+		ui.Column(c).Grow(1).Children(right)
+	})
+}
+
+// unitLabel is the suffix that gives a number its unit, kept out of the label so
+// labels stay short enough for one column.
+func unitLabel(c *ui.Context, t *ui.Theme, text string) {
+	ui.Text(c, text).FontSize(11).TextColor(t.TextMuted).SingleLine()
 }
 
 // ---- profile dialogs ------------------------------------------------------

@@ -2,6 +2,7 @@ package nvgui
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -261,7 +262,13 @@ func (a *App) logSection(c *ui.Context, t *ui.Theme) {
 		ui.Spacer(c).Grow(1)
 		return
 	}
-	ui.Scroll(c).Grow(1).Children(func() {
+	// Follow the end of the log while the view is at the end, so lines stream
+	// in during a scan. Scrolling up pins the view: Y stops tracking MaxY and
+	// stays where the user left it until they scroll back down.
+	if a.logScroll.Y >= a.logScroll.MaxY {
+		a.logScroll.Y = math.MaxFloat32
+	}
+	ui.Scroll(c).Grow(1).TrackScroll(&a.logScroll).Children(func() {
 		ui.Column(c).Gap(2).Children(func() {
 			if len(a.logs) == 0 {
 				ui.Text(c, "巡检日志会显示在这里").FontSize(10).TextColor(t.TextMuted)

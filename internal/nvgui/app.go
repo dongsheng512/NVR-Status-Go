@@ -128,6 +128,9 @@ type App struct {
 	logs        []logLine
 	logExpanded bool
 	logMu       sync.Mutex
+	// logScroll follows the end of the log unless the user scrolled up from
+	// it; see logSection.
+	logScroll ui.ScrollState
 
 	// results
 	report       *model.Report
