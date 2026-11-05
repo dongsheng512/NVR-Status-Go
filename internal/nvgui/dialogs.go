@@ -195,18 +195,23 @@ func (a *App) settingsDeepAV(c *ui.Context, t *ui.Theme) {
 					columnField(c, t, "", func() {
 						ui.Checkbox(c.Key("av-save"), &a.opt.AVSave, "保存抽检片段到本机").FontSize(11)
 					})
+					// Keep the folder row inside 时段与保存. A narrow field is
+					// fine here: the full path is available in the tooltip. Always
+					// present, disabled rather than hidden, so checking the box
+					// does not change the dialog's height.
+					ui.Column(c).Disabled(!a.opt.AVSave).Children(func() {
+						columnField(c, t, "保存目录", func() {
+							tip := "留空使用默认目录（应用数据目录/av_samples）"
+							if a.saveRoot != "" {
+								tip = a.saveRoot
+							}
+							ui.TextInput(c.Key("save-root"), &a.saveRoot).
+								Placeholder("默认目录").Width(104).Tooltip(tip)
+							ui.Button(c.Key("save-root-browse"), "选择…").Shrink(0).
+								MinWidth(46).Tooltip("选择保存抽检片段的文件夹").OnClick(a.chooseSaveRoot)
+						})
+					})
 				})
-			// The path needs room to be readable, so it spans the group instead
-			// of squeezing into the 240pt right column. Always present, disabled
-			// rather than hidden, so checking the box does not change the height.
-			ui.Column(c).Disabled(!a.opt.AVSave).Children(func() {
-				settingField(c, t, "保存目录", func() {
-					ui.TextInput(c.Key("save-root"), &a.saveRoot).
-						Placeholder("留空使用默认目录（应用数据目录/av_samples）").Grow(1)
-					ui.Button(c.Key("save-root-browse"), "选择…").Shrink(0).
-						Tooltip("选择保存抽检片段的文件夹").OnClick(a.chooseSaveRoot)
-				})
-			})
 		})
 	})
 }
