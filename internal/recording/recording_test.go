@@ -164,6 +164,38 @@ func TestBusyWindowAndPick(t *testing.T) {
 	}
 }
 
+// The preferred hours used to be cosmetic: a hard-coded 14:00 anchor meant
+// 9-18 and 10-20 produced the exact same probe instant. Changing the window
+// must now change the sampled instant, and it must stay inside the window.
+func TestPickBusyClipTimesFollowsPreferredHours(t *testing.T) {
+	now := time.Date(2026, 11, 5, 17, 20, 0, 0, time.Local)
+	seen := map[string]bool{}
+	for _, tc := range []struct{ sh, eh int }{
+		{9, 18}, {10, 20}, {11, 13}, {0, 10},
+	} {
+		s := &Service{BusyStartHour: tc.sh, BusyEndHour: tc.eh, Now: func() time.Time { return now }}
+		ws, we, _ := s.BusyHoursWindow()
+		cs, ce, label := s.PickBusyClipTimes(6, nil)
+		if cs.Before(ws) || ce.After(we) {
+			t.Fatalf("%d-%d: clip %v..%v outside window %v..%v", tc.sh, tc.eh, cs, ce, ws, we)
+		}
+		if ce.Sub(cs) != 6*time.Second {
+			t.Fatalf("%d-%d: duration = %v", tc.sh, tc.eh, ce.Sub(cs))
+		}
+		if got := cs.Local().Format("15:04"); got == "14:00" {
+			t.Fatalf("%d-%d: still pinned to the hard-coded 14:00 peak", tc.sh, tc.eh)
+		}
+		key := cs.Format("15:04:05")
+		if seen[key] {
+			t.Fatalf("%d-%d produced the same probe instant %s as an earlier window", tc.sh, tc.eh, key)
+		}
+		seen[key] = true
+		if !strings.Contains(label, "优先时段中点") {
+			t.Fatalf("%d-%d: label = %q", tc.sh, tc.eh, label)
+		}
+	}
+}
+
 func TestPickBusyClipTimesFixedInstant(t *testing.T) {
 	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.Local)
 	at := time.Date(2026, 9, 11, 9, 5, 0, 0, time.Local)

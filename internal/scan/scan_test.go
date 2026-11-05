@@ -75,6 +75,22 @@ func TestBuildClampsAndDefaults(t *testing.T) {
 	}
 }
 
+// A valid custom window must reach recording.Service unchanged; only an
+// inverted one falls back to 10-18.
+func TestBuildKeepsCustomPreferredHours(t *testing.T) {
+	r := NewRunner(Options{Quiet: true, Tools: fakeTools})
+	opt := model.DefaultScanOptions()
+	opt.DeepAVCheck = true
+	opt.BusyStart = 9
+	opt.BusyEnd = 18
+	n := r.Build(testDevice(), opt)
+	defer n.Client.Close()
+	if n.Recording.BusyStartHour != 9 || n.Recording.BusyEndHour != 18 {
+		t.Fatalf("busy hours = %d-%d, want 9-18",
+			n.Recording.BusyStartHour, n.Recording.BusyEndHour)
+	}
+}
+
 func TestErrorReportCarriesOptions(t *testing.T) {
 	r := NewRunner(Options{Quiet: true, Tools: fakeTools})
 	opt := model.DefaultScanOptions()

@@ -580,14 +580,7 @@ func (s *Service) BusyHoursWindow() (time.Time, time.Time, string) {
 // PickBusyClipTimes chooses the short probe window. at pins a fixed instant.
 func (s *Service) PickBusyClipTimes(seconds int, at *time.Time) (time.Time, time.Time, string) {
 	ws, we, label := s.BusyHoursWindow()
-	local := s.now().Local()
 	cutoff := util.LatestAVSampleInstant(s.now())
-	peakLocal := time.Date(local.Year(), local.Month(), local.Day(), 14, 0, 0, 0, local.Location())
-	wsLocal := ws.Local()
-	if wsLocal.YearDay() != local.YearDay() || wsLocal.Year() != local.Year() {
-		peakLocal = time.Date(wsLocal.Year(), wsLocal.Month(), wsLocal.Day(), 14, 0, 0, 0, local.Location())
-	}
-	peak := peakLocal.UTC()
 	sec := seconds
 	if sec < 3 {
 		sec = 3
@@ -614,45 +607,29 @@ func (s *Service) PickBusyClipTimes(seconds int, at *time.Time) (time.Time, time
 		}
 		return clipS, clipE, head + clipS.Local().Format("01-02 15:04:05") + ")"
 	}
-	var clipS, clipE time.Time
-	where := ""
-	if !peak.Before(ws) && !peak.After(we) {
-		clipE = peak.Add(time.Duration(sec) * time.Second)
+	// 优先时段就是用户指定「最该抽的那段」。以前这里钉死在 14:00，只要
+	// 14:00 落在窗口内，改起止时间完全不改变抽检点（设 9-18 与 10-20 得到
+	// 同一个 14:00:00），看起来就像设置没生效。改取实际窗口的中点：一定在
+	// [ws, we] 内，且随起止设置线性变化。
+	peak := ws.Add(we.Sub(ws) / 2)
+	where := "优先时段中点"
+	clipE := peak.Add(time.Duration(sec) * time.Second)
+	if we.Before(clipE) {
+		clipE = we
+	}
+	if cutoff.Before(clipE) {
+		clipE = cutoff
+	}
+	clipS := clipE.Add(-time.Duration(sec) * time.Second)
+	if clipS.Before(ws) {
+		clipS = ws
+		clipE = clipS.Add(time.Duration(sec) * time.Second)
 		if we.Before(clipE) {
 			clipE = we
 		}
 		if cutoff.Before(clipE) {
 			clipE = cutoff
 		}
-		clipS = clipE.Add(-time.Duration(sec) * time.Second)
-		if clipS.Before(ws) {
-			clipS = ws
-			clipE = clipS.Add(time.Duration(sec) * time.Second)
-			if we.Before(clipE) {
-				clipE = we
-			}
-			if cutoff.Before(clipE) {
-				clipE = cutoff
-			}
-		}
-		where = "14:00附近"
-	} else {
-		clipE = we
-		if cutoff.Before(clipE) {
-			clipE = cutoff
-		}
-		clipS = clipE.Add(-time.Duration(sec) * time.Second)
-		if clipS.Before(ws) {
-			clipS = ws
-			clipE = clipS.Add(time.Duration(sec) * time.Second)
-			if we.Before(clipE) {
-				clipE = we
-			}
-			if cutoff.Before(clipE) {
-				clipE = cutoff
-			}
-		}
-		where = "时段末尾"
 	}
 	if clipE.After(cutoff) {
 		clipE = cutoff

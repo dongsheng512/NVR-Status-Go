@@ -1723,6 +1723,7 @@ func (s *Service) Run(records []model.Record) error {
 		dir := s.AVSaveDir()
 		if dir != "" && savedN > 0 {
 			s.log(fmt.Sprintf("已保存 %d 个抽检片段 → %s", savedN, dir))
+			s.log("时间说明：目录名与文件修改时间是本次巡检启动时刻；文件名末尾的 HHMMSS 才是片段的抽检时刻（设备时区）。核对优先时段请看上方「优先时段」日志")
 		} else if dir != "" {
 			s.log("已创建目录但未保存到文件: " + dir)
 		}
