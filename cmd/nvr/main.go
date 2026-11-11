@@ -23,7 +23,7 @@ import (
 	"nvrstatus/internal/util"
 )
 
-const version = "3.0.0-dev"
+const version = "3.0.1"
 
 func main() {
 	os.Exit(run(os.Args[1:]))

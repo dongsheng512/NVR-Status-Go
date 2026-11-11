@@ -43,7 +43,7 @@ make tools             # → bin/nvrtool（供提交钩子使用）
 make app
 # 产出：
 #   build/darwin-arm64/NVR Status.app
-#   build/darwin-arm64/NVR Status 3.0.0 arm64.dmg
+#   build/darwin-arm64/NVR Status 3.0.1 arm64.dmg
 ```
 
 `mygo.json` 的 `main` 指向 `./cmd/nvr-gui`。**应用包与 dmg 里只有 GUI**；`cmd/nvr` 和 `cmd/nvr-agent` 不会被打进去。Windows/Linux 可用：
