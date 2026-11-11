@@ -969,7 +969,7 @@ func TestComputeClipWindow(t *testing.T) {
 // saving clips
 
 func TestSavePathNaming(t *testing.T) {
-	svc, _, _ := newTestService(t)
+	svc, tools, _ := newTestService(t)
 	svc.AVSave = true
 	svc.AVSaveRoot = t.TempDir()
 	recs := []model.Record{makeRecord("101", "1", "前门", boolPtr(true), true, "")}
@@ -998,6 +998,18 @@ func TestSavePathNaming(t *testing.T) {
 	st, err := os.Stat(path)
 	if err != nil || st.Size() < 1024 {
 		t.Fatalf("saved size = %v err=%v", st, err)
+	}
+	// The saved file must be produced by a video+audio mux command, not just
+	// the video-only temporary pull.
+	merged := false
+	for _, call := range readCalls(t, tools.log) {
+		if strings.Contains(call, "-map 1:a:0") {
+			merged = true
+			break
+		}
+	}
+	if !merged {
+		t.Fatalf("no audio mux command in calls: %v", readCalls(t, tools.log))
 	}
 }
 

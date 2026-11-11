@@ -621,7 +621,7 @@ func (s *Service) prepareAVSaveDir() string {
 
 // saveClipFile copies a successfully pulled temporary clip into the run's save
 // directory. It returns "" when saving is disabled or the copy fails.
-func (s *Service) saveClipFile(tmpPath, trackID, channel, name string, clipStart *time.Time) string {
+func (s *Service) saveClipFile(tmpPath, trackID, channel, name string, clipStart *time.Time, audioPath string) string {
 	saveDir := s.prepareAVSaveDir()
 	if saveDir == "" || tmpPath == "" {
 		return ""
@@ -657,6 +657,22 @@ func (s *Service) saveClipFile(tmpPath, trackID, channel, name string, clipStart
 				break
 			}
 		}
+	}
+	// If a separate audio track was pulled successfully, mux it with the
+	// video instead of saving a silent video-only clip.
+	if audioPath != "" && s.FFmpeg != "" && fileSize(audioPath) >= 1024 {
+		args := []string{
+			s.FFmpeg, "-y", "-hide_banner", "-loglevel", "error",
+			"-i", tmpPath, "-i", audioPath,
+			"-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
+			"-f", "matroska", dest,
+		}
+		res, err := s.runCommand(args, 30*time.Second)
+		if err == nil && res.ExitCode == 0 && fileSize(dest) >= 1024 {
+			return dest
+		}
+		_ = os.Remove(dest)
+		s.log("音频合并失败，改为保存视频片段")
 	}
 	src, err := os.Open(tmpPath)
 	if err != nil {
@@ -884,6 +900,9 @@ type audioProbeResult struct {
 	Codec string
 	Mean  *float64
 	Note  string
+	// TempPath is the pulled audio track, kept only when the stream exists
+	// (ok/silent). The caller must remove it after muxing/saving.
+	TempPath string
 }
 
 // audioVerdict maps an audio pull status to (音频抽检, 备注).
@@ -981,14 +1000,27 @@ func asRank(video, audio string) [2]int {
 
 // probeAudioTrack pulls the audio track separately and runs volumedetect.
 func (s *Service) probeAudioTrack(ffmpeg, ffprobe string, candidates []candidate, expectAudio *bool) (*audioProbeResult, error) {
-	audioSeconds := max(3, min(s.avSeconds(), 4))
+	// A saved clip should keep the audio for the whole video, not just the
+	// short 4s analysis window. Non-saving probes keep the original cap.
+	audioSeconds := s.avSeconds()
+	if !s.AVSave && audioSeconds > 4 {
+		audioSeconds = 4
+	}
+	if audioSeconds < 3 {
+		audioSeconds = 3
+	}
 	tmp, err := os.CreateTemp("", "nvr_a_*.mkv")
 	if err != nil {
 		return &audioProbeResult{Probe: model.StatusUnknown, Note: "音频抽检异常: " + truncateRunes(maskCredentials(err.Error()), 80)}, nil
 	}
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
-	defer func() { _ = os.Remove(tmpPath) }()
+	keepTemp := false
+	defer func() {
+		if !keepTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	pull, err := s.pullRTSPMap(ffmpeg, candidates, tmpPath, "0:a:0", audioSeconds,
 		[]string{"-vn"},
@@ -1087,7 +1119,17 @@ func (s *Service) probeAudioTrack(ffmpeg, ffprobe string, candidates []candidate
 	if verdict == model.StatusUnknown && lastErr != "" {
 		note = note + ": " + truncateRunes(maskCredentials(lastErr), 80)
 	}
-	return &audioProbeResult{Probe: verdict, Codec: codec, Mean: meanDB, Note: note}, nil
+	// Keep the pulled track when the stream itself exists, even if the level
+	// could not be measured; the save path can still mux it.
+	if status == "ok" || status == "silent" {
+		keepTemp = true
+	}
+	return &audioProbeResult{Probe: verdict, Codec: codec, Mean: meanDB, Note: note, TempPath: func() string {
+		if keepTemp {
+			return tmpPath
+		}
+		return ""
+	}()}, nil
 }
 
 var (
@@ -1253,6 +1295,9 @@ func (s *Service) probeTrackAV(trackID, playbackURI string, segStart, segEnd *ti
 	if aerr != nil {
 		return nil, aerr
 	}
+	if audioRes.TempPath != "" {
+		defer func() { _ = os.Remove(audioRes.TempPath) }()
+	}
 	res.AudioProbe = statusOrUnknown(audioRes.Probe)
 	res.AudioCodec = audioRes.Codec
 	res.MeanVolumeDB = audioRes.Mean
@@ -1293,7 +1338,7 @@ func (s *Service) probeTrackAV(trackID, playbackURI string, segStart, segEnd *ti
 		if saveClipStart != nil {
 			start = saveClipStart
 		}
-		if saved := s.saveClipFile(tmpPath, trackID, channel, name, start); saved != "" {
+		if saved := s.saveClipFile(tmpPath, trackID, channel, name, start, audioRes.TempPath); saved != "" {
 			res.SavePath = saved
 		} else {
 			extra := "保存片段失败"
