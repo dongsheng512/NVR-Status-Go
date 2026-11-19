@@ -71,9 +71,11 @@ type Service struct {
 	Log      func(string)
 	// Ctx cancels the run and every child process it spawns. nil means
 	// "never cancelled". This is the context itself, not a poll predicate:
-	// exec.CommandContext reacts the moment it is done.
-	Ctx context.Context
-	Now func() time.Time
+	// exec.CommandContext reacts the moment it is done. Use SetContext when
+	// mutating after workers may have started.
+	Ctx   context.Context
+	ctxMu sync.RWMutex
+	Now   func() time.Time
 
 	saveMu  sync.Mutex
 	saveDir string
@@ -110,12 +112,23 @@ func (s *Service) progress(msg string, current, total int, phase string, overall
 	}
 }
 
+// SetContext installs a cancellation context safe for concurrent reads from
+// probe workers.
+func (s *Service) SetContext(ctx context.Context) {
+	s.ctxMu.Lock()
+	s.Ctx = ctx
+	s.ctxMu.Unlock()
+}
+
 // ctx returns the cancellation context, never nil.
 func (s *Service) ctx() context.Context {
-	if s.Ctx == nil {
+	s.ctxMu.RLock()
+	c := s.Ctx
+	s.ctxMu.RUnlock()
+	if c == nil {
 		return context.Background()
 	}
-	return s.Ctx
+	return c
 }
 
 func (s *Service) checkCancel() error {
@@ -603,17 +616,22 @@ func (s *Service) prepareAVSaveDir() string {
 	if root == "" {
 		root = "av_samples"
 	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		s.log("创建抽检保存目录失败: " + err.Error())
+		return ""
+	}
 	base := filepath.Join(root, s.now().Local().Format("20060102_150405"))
 	path := base
 	for n := 1; ; n++ {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		err := os.Mkdir(path, 0o755)
+		if err == nil {
 			break
 		}
+		if !errors.Is(err, os.ErrExist) {
+			s.log("创建抽检保存目录失败: " + err.Error())
+			return ""
+		}
 		path = fmt.Sprintf("%s_%d", base, n)
-	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		s.log("创建抽检保存目录失败: " + err.Error())
-		return ""
 	}
 	s.saveDir = path
 	return path
@@ -647,16 +665,9 @@ func (s *Service) saveClipFile(tmpPath, trackID, channel, name string, clipStart
 		ttag = s.now().In(s.location()).Format("150405")
 	}
 	fname := fmt.Sprintf("ch%s_%s_track%s_%s.mkv", ch, nm, tid, ttag)
-	dest := filepath.Join(saveDir, fname)
-	if _, err := os.Stat(dest); err == nil {
-		ext := filepath.Ext(fname)
-		stem := strings.TrimSuffix(fname, ext)
-		for i := 1; ; i++ {
-			dest = filepath.Join(saveDir, fmt.Sprintf("%s_%d%s", stem, i, ext))
-			if _, err := os.Stat(dest); os.IsNotExist(err) {
-				break
-			}
-		}
+	dest, ok := reserveClipPath(saveDir, fname)
+	if !ok {
+		return ""
 	}
 	// If a separate audio track was pulled successfully, mux it with the
 	// video instead of saving a silent video-only clip.
@@ -695,10 +706,63 @@ func (s *Service) saveClipFile(tmpPath, trackID, channel, name string, clipStart
 	return dest
 }
 
+// reserveClipPath atomically creates a placeholder file so concurrent workers
+// never collide on the same clip path, and fails fast on non-Exist OS errors
+// instead of spinning forever.
+func reserveClipPath(dir, fname string) (string, bool) {
+	ext := filepath.Ext(fname)
+	stem := strings.TrimSuffix(fname, ext)
+	dest := filepath.Join(dir, fname)
+	for i := 1; ; i++ {
+		f, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			_ = f.Close()
+			return dest, true
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", false
+		}
+		dest = filepath.Join(dir, fmt.Sprintf("%s_%d%s", stem, i, ext))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // process execution
 
 var errCommandTimeout = errors.New("command timeout")
+
+const maxCommandOutputBytes = 2 << 20 // 2 MiB tail cap per stream
+
+// tailBuffer keeps at most limit bytes (retaining the tail so volumedetect's
+// trailing summary is never lost while preventing unbounded memory growth on
+// corrupted streams).
+type tailBuffer struct {
+	limit int
+	buf   bytes.Buffer
+}
+
+func newTailBuffer(limit int) *tailBuffer {
+	return &tailBuffer{limit: limit}
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if b.limit <= 0 {
+		return n, nil
+	}
+	if len(p) >= b.limit {
+		b.buf.Reset()
+		_, _ = b.buf.Write(p[len(p)-b.limit:])
+		return n, nil
+	}
+	if over := b.buf.Len() + len(p) - b.limit; over > 0 {
+		b.buf.Next(over)
+	}
+	_, _ = b.buf.Write(p)
+	return n, nil
+}
+
+func (b *tailBuffer) String() string { return b.buf.String() }
 
 type commandResult struct {
 	Stdout   string
@@ -727,10 +791,11 @@ func (s *Service) runCommand(args []string, timeout time.Duration) (*commandResu
 		defer cancelTimeout()
 	}
 
-	var stdout, stderr bytes.Buffer
+	stdout := newTailBuffer(maxCommandOutputBytes)
+	stderr := newTailBuffer(maxCommandOutputBytes)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	cmd.WaitDelay = 1 * time.Second
 
 	runErr := cmd.Run()
@@ -1463,16 +1528,15 @@ func (s *Service) runAVJobs(records []model.Record, indexes []int, clipS, clipE 
 					out <- avJobResult{index: idx, err: err}
 					return
 				}
-				if s.GlobalAV != nil {
-					if err := s.GlobalAV.Acquire(s.checkCancel); err != nil {
-						out <- avJobResult{index: idx, err: err}
-						return
+				res, err := func() (*probeResult, error) {
+					if s.GlobalAV != nil {
+						if err := s.GlobalAV.Acquire(s.checkCancel); err != nil {
+							return nil, err
+						}
+						defer s.GlobalAV.Release()
 					}
-				}
-				res, err := s.probeChannelAt(&records[idx], clipS, clipE, sampleLabel)
-				if s.GlobalAV != nil {
-					s.GlobalAV.Release()
-				}
+					return s.probeChannelAt(&records[idx], clipS, clipE, sampleLabel)
+				}()
 				out <- avJobResult{index: idx, res: res, err: err}
 				if err != nil {
 					return
@@ -1646,9 +1710,14 @@ func (s *Service) Run(records []model.Record) error {
 					statusOrUnknown(newRes.VideoProbe), statusOrUnknown(newRes.AudioProbe)))
 				cur := merged[ci]
 				if cur == nil || rankLess(asRank(newRes.VideoProbe, newRes.AudioProbe), asRank(cur.VideoProbe, cur.AudioProbe)) {
+					if cur != nil && cur.SavePath != "" && cur.SavePath != newRes.SavePath {
+						_ = os.Remove(cur.SavePath)
+					}
 					merged[ci] = newRes
 					bestLabel[ci] = sampleLabel
 					bestAt[ci] = at
+				} else if newRes.SavePath != "" && (cur == nil || newRes.SavePath != cur.SavePath) {
+					_ = os.Remove(newRes.SavePath)
 				}
 			}
 		}
@@ -1730,7 +1799,11 @@ func (s *Service) Run(records []model.Record) error {
 				}
 				oldV, oldA := rec.VideoProbe, rec.AudioProbe
 				oldDetail := rec.ProbeDetail
+				oldSavePath := rec.SavePath
 				if avSeverity(newRes.VideoProbe, newRes.AudioProbe) < avSeverity(oldV, oldA) {
+					if oldSavePath != "" && oldSavePath != newRes.SavePath {
+						_ = os.Remove(oldSavePath)
+					}
 					applyAVResult(rec, newRes, rLabel)
 					extra := "复检通过,初检失败"
 					if rec.ProbeDetail != "" {
@@ -1740,6 +1813,9 @@ func (s *Service) Run(records []model.Record) error {
 					}
 					retryOK++
 				} else {
+					if newRes.SavePath != "" && newRes.SavePath != oldSavePath {
+						_ = os.Remove(newRes.SavePath)
+					}
 					stamp := rS.Local().Format("15:04:05")
 					note := newRes.Detail
 					if note == "" {

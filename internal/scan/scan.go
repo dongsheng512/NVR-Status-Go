@@ -5,6 +5,7 @@ package scan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -64,7 +65,7 @@ type NVR struct {
 func (n *NVR) SetContext(ctx context.Context) {
 	n.Client.SetContext(ctx)
 	if n.AV != nil {
-		n.AV.Ctx = ctx
+		n.AV.SetContext(ctx)
 	}
 }
 
@@ -165,6 +166,8 @@ func (r *Runner) Build(device model.Device, opt model.ScanOptions) *NVR {
 	if rec.BusyEndHour <= rec.BusyStartHour {
 		rec.BusyStartHour, rec.BusyEndHour = 10, 18
 	}
+	opt.BusyStart = rec.BusyStartHour
+	opt.BusyEnd = rec.BusyEndHour
 
 	store := &storage.Service{F: client, Log: logf}
 
@@ -182,6 +185,7 @@ func (r *Runner) Build(device model.Device, opt model.ScanOptions) *NVR {
 		AVSaveRoot: saveRoot,
 		Username:   device.Username,
 		Password:   device.Password,
+		GlobalAV:   r.Options.GlobalAV,
 		// Location is resolved lazily in NVR.Run: Build must not touch the network.
 		Log: logf,
 		// Ctx is left nil here on purpose: the caller installs it after Build via
@@ -236,6 +240,9 @@ func (n *NVR) Run(progress func(model.Progress)) model.Report {
 	}
 	emit(fmt.Sprintf("连接 %s...", name), "connect", 0.03)
 	info, err := n.Client.DeviceInfo()
+	if errors.Is(err, util.ErrCancelled) || n.Client.Context().Err() != nil {
+		return errorReport(n, name, "巡检已取消")
+	}
 	if err != nil || len(info) == 0 {
 		return errorReport(n, name, "无法获取设备信息，请检查 IP/账号/网络")
 	}
@@ -244,25 +251,43 @@ func (n *NVR) Run(progress func(model.Progress)) model.Report {
 	}
 	emit(fmt.Sprintf("设备: %s 固件 %s", info["型号"], info["固件版本"]), "device", 0.10)
 	emit("读取系统状态…", "sys", 0.14)
-	sys, _ := n.Client.SystemStatus()
+	sys, sysErr := n.Client.SystemStatus()
+	if errors.Is(sysErr, util.ErrCancelled) || n.Client.Context().Err() != nil {
+		return errorReport(n, name, "巡检已取消")
+	}
 	// Resolve the device wall-clock timezone now that the client is connected.
 	n.AV.Location = n.Client.DeviceLocation()
+	if n.Client.Context().Err() != nil {
+		return errorReport(n, name, "巡检已取消")
+	}
 	emit("获取摄像头列表…", "cameras", 0.18)
-	cameras, _ := n.Client.Cameras()
+	cameras, camErr := n.Client.Cameras()
+	if errors.Is(camErr, util.ErrCancelled) || n.Client.Context().Err() != nil {
+		return errorReport(n, name, "巡检已取消")
+	}
 	emit(fmt.Sprintf("摄像头 %d 路，开始录像/近期录像检查...", len(cameras)), "recording", 0.26)
 	records, recErr := n.Recording.RecordingStatus()
 	if recErr != nil {
-		if recErr == util.ErrCancelled {
+		if errors.Is(recErr, util.ErrCancelled) || n.Client.Context().Err() != nil {
 			return errorReport(n, name, "巡检已取消")
 		}
 		return errorReport(n, name, "录像检查失败: "+recErr.Error())
 	}
 	emit("读取硬盘状态与循环覆盖…", "storage", 0.97)
-	drives, _ := n.Storage.StorageStatus()
+	drives, drvErr := n.Storage.StorageStatus()
+	if errors.Is(drvErr, util.ErrCancelled) || n.Client.Context().Err() != nil {
+		return errorReport(n, name, "巡检已取消")
+	}
 	overwrite := n.Storage.DiskOverwriteStatus(drives)
+	if n.Client.Context().Err() != nil {
+		return errorReport(n, name, "巡检已取消")
+	}
 	emit("汇总健康状态…", "health", 0.99)
 	summary := health.Summarize(cameras, records, drives, overwrite, n.Opt.DeepAVCheck)
-	alarms, _ := n.Client.Alarms()
+	alarms, alarmErr := n.Client.Alarms()
+	if errors.Is(alarmErr, util.ErrCancelled) || n.Client.Context().Err() != nil {
+		return errorReport(n, name, "巡检已取消")
+	}
 	emit("巡检完成", "done", 1.0)
 	return model.Report{
 		DeviceName:         name,

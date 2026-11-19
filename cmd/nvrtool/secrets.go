@@ -42,10 +42,17 @@ func runSecrets(argv []string) error {
 		return err
 	}
 	var files []string
+	var readFile func(string) ([]string, error)
 	if *all {
 		files = walkTextFiles(".")
+		readFile = readLines
 	} else {
-		files = stagedTextFiles()
+		var err error
+		files, err = stagedTextFiles()
+		if err != nil {
+			return fmt.Errorf("获取暂存文件列表失败: %w", err)
+		}
+		readFile = readStagedLines
 	}
 	files = sortedUnique(files)
 	values := loadTrueValues(profileCandidates())
@@ -53,7 +60,7 @@ func runSecrets(argv []string) error {
 	if len(values) == 0 {
 		var warned []string
 		for _, path := range files {
-			lines, err := readLines(path)
+			lines, err := readFile(path)
 			if err != nil {
 				continue
 			}
@@ -80,9 +87,9 @@ func runSecrets(argv []string) error {
 
 	var hits []string
 	for _, path := range files {
-		lines, err := readLines(path)
+		lines, err := readFile(path)
 		if err != nil {
-			continue
+			return fmt.Errorf("读取待检文件 %s 失败: %w", path, err)
 		}
 		for i, line := range lines {
 			if containsAny(line, values) {
@@ -109,6 +116,9 @@ func profileCandidates() []string {
 	var out []string
 	if p := os.Getenv("NVRSTATUS_PROFILE"); p != "" {
 		out = append(out, p)
+	}
+	if dir := strings.TrimSpace(os.Getenv("NVRSTATUS_DATA_DIR")); dir != "" {
+		out = append(out, filepath.Join(dir, "profiles.json"))
 	}
 	home, err := os.UserHomeDir()
 	if err == nil {
@@ -202,10 +212,10 @@ func walkTextFiles(root string) []string {
 	return out
 }
 
-func stagedTextFiles() []string {
+func stagedTextFiles() ([]string, error) {
 	out, err := exec.Command("git", "diff", "--cached", "--name-only", "--diff-filter=ACM").Output()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var files []string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -214,7 +224,15 @@ func stagedTextFiles() []string {
 			files = append(files, line)
 		}
 	}
-	return files
+	return files, nil
+}
+
+func readStagedLines(path string) ([]string, error) {
+	out, err := exec.Command("git", "show", ":"+path).Output()
+	if err != nil {
+		return nil, err
+	}
+	return strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n"), nil
 }
 
 func readLines(path string) ([]string, error) {

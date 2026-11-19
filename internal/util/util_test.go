@@ -208,11 +208,19 @@ func TestParsePercent(t *testing.T) {
 		{"-", 0, false},
 		// 中间的 % 说明文本本身是坏的；删掉它会变成看似合理的数字
 		{"9%8", 0, false},
+		{"NaN", 0, false},
+		{"Inf", 0, false},
 	}
 	for _, c := range cases {
 		got, ok := ParsePercent(c.in)
 		if got != c.want || ok != c.ok {
 			t.Errorf("ParsePercent(%q) = (%v, %v), 期望 (%v, %v)", c.in, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+func TestSafeFilenameTrimsAfterTruncate(t *testing.T) {
+	if got := SafeFilename("abc.def", 4); got != "abc" {
+		t.Fatalf("SafeFilename = %q, want abc", got)
 	}
 }

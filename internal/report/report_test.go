@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 
@@ -85,5 +86,40 @@ func TestRenderDiskUsageUnknownIsNotGreen(t *testing.T) {
 	}
 	if strings.Contains(out, "硬盘\t正常") {
 		t.Fatalf("disk row says 正常 while usage is unknown:\n%s", out)
+	}
+}
+
+func TestRenderSiteWorstStatus(t *testing.T) {
+	good := sampleReport()
+	good.Health.Status = "良好"
+	good.Health.Warnings = nil
+
+	var buf bytes.Buffer
+	RenderSite(&buf, []model.Report{good})
+	if !strings.Contains(buf.String(), "✓ 良好") {
+		t.Fatalf("all-good site should show ✓ 良好, got:\n%s", buf.String())
+	}
+
+	warn := sampleReport()
+	warn.Health.Status = "警告"
+	buf.Reset()
+	RenderSite(&buf, []model.Report{good, warn})
+	if !strings.Contains(buf.String(), "! 警告") {
+		t.Fatalf("site with warning should show ! 警告, got:\n%s", buf.String())
+	}
+}
+
+func TestUsageBarAndParseFloatRejectNaNInf(t *testing.T) {
+	if got := parseFloat("NaN"); got != 0 {
+		t.Fatalf("parseFloat(NaN) = %v, want 0", got)
+	}
+	if got := parseFloat("Inf"); got != 0 {
+		t.Fatalf("parseFloat(Inf) = %v, want 0", got)
+	}
+	for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -5, 150} {
+		bar := usageBar(v, 10)
+		if bar == "" {
+			t.Fatalf("usageBar(%v) returned empty", v)
+		}
 	}
 }

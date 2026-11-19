@@ -2,8 +2,11 @@ package history
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"nvrstatus/internal/model"
 )
@@ -53,18 +56,47 @@ func LatestForDeviceExcept(ip, skipPath string) (*model.Report, error) {
 	if strings.TrimSpace(ip) == "" {
 		return nil, nil
 	}
-	metas, err := ListReports()
+	dir := Dir()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
-	for _, meta := range metas {
-		if meta.IP != ip {
+	type candidate struct {
+		path    string
+		modTime time.Time
+	}
+	cands := make([]candidate, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
 			continue
 		}
-		if skipPath != "" && samePath(meta.Path, skipPath) {
+		full := filepath.Join(dir, entry.Name())
+		if skipPath != "" && samePath(full, skipPath) {
 			continue
 		}
-		return LoadReport(meta.Path)
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		cands = append(cands, candidate{path: full, modTime: info.ModTime()})
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].modTime.Equal(cands[j].modTime) {
+			return cands[i].path > cands[j].path
+		}
+		return cands[i].modTime.After(cands[j].modTime)
+	})
+	for _, c := range cands {
+		rep, err := LoadReport(c.path)
+		if err != nil {
+			continue
+		}
+		if rep.IP == ip {
+			return rep, nil
+		}
 	}
 	return nil, nil
 }
@@ -81,6 +113,9 @@ func samePath(a, b string) bool {
 // normal nor intentionally skipped count as an issue.
 func Compare(prev, cur model.Report) Diff {
 	d := Diff{HealthBefore: prev.Health.Status, HealthAfter: cur.Health.Status}
+	if prev.Error != "" || cur.Error != "" {
+		return d
+	}
 	prevByKey := make(map[string]model.Record, len(prev.Records))
 	for _, r := range prev.Records {
 		prevByKey[recordKey(r)] = r

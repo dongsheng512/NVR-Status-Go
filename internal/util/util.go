@@ -4,10 +4,12 @@ package util
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -112,7 +114,7 @@ func ParsePercent(s string) (float64, bool) {
 		return 0, false
 	}
 	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, false
 	}
 	return v, true
@@ -291,7 +293,9 @@ func ToolBinDirs() []string {
 	}
 	exe, err := os.Executable()
 	if err == nil {
-		exe, _ = filepath.EvalSymlinks(exe)
+		if real, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = real
+		}
 		exeDir := filepath.Dir(exe)
 		add(filepath.Join(exeDir, "bin"))
 		// macOS .app: Contents/MacOS/exe → Contents/Frameworks/bin
@@ -312,6 +316,9 @@ func isRunnable(path string) bool {
 	if err != nil || st.IsDir() {
 		return false
 	}
+	if runtime.GOOS != "windows" && st.Mode()&0o111 == 0 {
+		return false
+	}
 	return true
 }
 
@@ -326,11 +333,11 @@ func SafeFilename(text string, maxLen int) string {
 	s = whitespace.ReplaceAllString(s, "_")
 	s = multiUnderscore.ReplaceAllString(s, "_")
 	s = strings.Trim(s, "._")
+	if maxLen > 0 && len([]rune(s)) > maxLen {
+		s = strings.Trim(string([]rune(s)[:maxLen]), "._")
+	}
 	if s == "" {
 		s = "unknown"
-	}
-	if maxLen > 0 && len([]rune(s)) > maxLen {
-		s = string([]rune(s)[:maxLen])
 	}
 	return s
 }

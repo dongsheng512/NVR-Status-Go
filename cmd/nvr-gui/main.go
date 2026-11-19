@@ -19,7 +19,7 @@ import (
 func main() {
 	defer writeCrash()
 	app := nvgui.New()
-	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { app.SaveSettings() })
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { app.Shutdown() })
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:                "NVR Status",

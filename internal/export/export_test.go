@@ -292,3 +292,12 @@ func findRow(rows [][]string, want []string) int {
 	}
 	return -1
 }
+
+func TestSafeCellBlocksLeadingWhitespaceFormula(t *testing.T) {
+	for _, in := range []string{" =cmd|' /C calc'!A0", "\n=1+1", "\t+SUM(A1:A2)"} {
+		got := safeCell(in)
+		if !strings.HasPrefix(got, "'") {
+			t.Errorf("safeCell(%q) = %q, want leading apostrophe", in, got)
+		}
+	}
+}

@@ -335,6 +335,11 @@ func bundle(cfg bundleConfig) error {
 
 	for name := range files {
 		target := filepath.Join(cfg.Dest, name)
+		// Homebrew dylibs are often 0444; make the bundle copy writable so
+		// install_name_tool can rewrite its load commands.
+		if err := os.Chmod(target, 0o644); err != nil {
+			return err
+		}
 		if err := cfg.RunTool("install_name_tool", "-id", "@loader_path/"+name, target); err != nil {
 			return err
 		}

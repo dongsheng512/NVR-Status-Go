@@ -93,6 +93,10 @@ type Client struct {
 	camerasLoaded bool
 	cameras       []model.Camera
 
+	digestMu sync.Mutex
+	digestCh *digestChallenge
+	digestNC uint32
+
 	sslNotice sync.Once
 }
 
@@ -297,8 +301,8 @@ func (c *Client) fetchText(method, endpoint, body, tag string, quiet bool) (stri
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, XMLMaxBytes+1))
 	if err != nil {
-		if errors.Is(err, util.ErrCancelled) {
-			return "", err
+		if errors.Is(err, util.ErrCancelled) || errors.Is(err, context.Canceled) || c.currentContext().Err() != nil {
+			return "", util.ErrCancelled
 		}
 		if !quiet {
 			c.warnFail(tag, err.Error())
@@ -323,8 +327,19 @@ func (c *Client) doRequest(method, endpoint, body string) (*http.Response, error
 	}
 	ctx := c.currentContext()
 	rawURL := c.baseURL + "/ISAPI" + endpoint
+	uri := endpoint
+	if parsed, err := url.Parse(rawURL); err == nil {
+		uri = parsed.RequestURI()
+	}
 
-	resp, err := c.send(ctx, method, rawURL, body, "")
+	var preAuth string
+	if ch, nc := c.cachedDigest(); ch != nil {
+		if auth, err := ch.authorizationWithNC(method, uri, c.cfg.Username, c.cfg.Password, nc); err == nil {
+			preAuth = auth
+		}
+	}
+
+	resp, err := c.send(ctx, method, rawURL, body, preAuth)
 	if err != nil {
 		return nil, wrapTransportError(endpoint, err)
 	}
@@ -341,11 +356,8 @@ func (c *Client) doRequest(method, endpoint, body string) (*http.Response, error
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	_ = resp.Body.Close()
 
-	uri := endpoint
-	if parsed, err := url.Parse(rawURL); err == nil {
-		uri = parsed.RequestURI()
-	}
-	authorization, err := challenge.authorization(method, uri, c.cfg.Username, c.cfg.Password)
+	nc := c.storeDigest(challenge)
+	authorization, err := challenge.authorizationWithNC(method, uri, c.cfg.Username, c.cfg.Password, nc)
 	if err != nil {
 		return nil, err
 	}
@@ -354,6 +366,28 @@ func (c *Client) doRequest(method, endpoint, body string) (*http.Response, error
 		return nil, wrapTransportError(endpoint, err)
 	}
 	return resp, nil
+}
+
+func (c *Client) cachedDigest() (*digestChallenge, uint32) {
+	c.digestMu.Lock()
+	defer c.digestMu.Unlock()
+	if c.digestCh == nil {
+		return nil, 0
+	}
+	c.digestNC++
+	return c.digestCh, c.digestNC
+}
+
+func (c *Client) storeDigest(ch *digestChallenge) uint32 {
+	c.digestMu.Lock()
+	defer c.digestMu.Unlock()
+	if c.digestCh != nil && c.digestCh.Nonce == ch.Nonce && c.digestCh.Realm == ch.Realm {
+		c.digestNC++
+		return c.digestNC
+	}
+	c.digestCh = ch
+	c.digestNC = 1
+	return 1
 }
 
 func (c *Client) send(ctx context.Context, method, rawURL, body, authorization string) (*http.Response, error) {

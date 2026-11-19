@@ -8,6 +8,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -23,7 +24,7 @@ import (
 	"nvrstatus/internal/util"
 )
 
-const version = "3.0.1"
+const version = "3.0.2"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -63,13 +64,21 @@ type cliArgs struct {
 func parseArgs(argv []string) (*cliArgs, error) {
 	a := &cliArgs{selector: "all", port: 80, username: "admin", lookback: 60, workers: 8,
 		avSeconds: 6, avWorkers: 2, silenceDB: -80, busyStart: 10, busyEnd: 18}
+	hasLeadingSelector := false
 	if len(argv) > 0 && !strings.HasPrefix(argv[0], "-") {
 		a.selector = argv[0]
 		argv = argv[1:]
+		hasLeadingSelector = true
 	}
 	fs := newFlagSet(a)
 	if err := fs.Parse(argv); err != nil {
 		return nil, err
+	}
+	if rest := fs.Args(); len(rest) > 0 {
+		if hasLeadingSelector || len(rest) > 1 {
+			return nil, fmt.Errorf("多余的位置参数: %s", strings.Join(rest, " "))
+		}
+		a.selector = rest[0]
 	}
 	return a, nil
 }
@@ -116,6 +125,9 @@ func newFlagSet(a *cliArgs) *flag.FlagSet {
 func run(argv []string) int {
 	a, err := parseArgs(argv)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 1
 	}
 	if a.showVer {
@@ -254,12 +266,20 @@ func loadDevices(a *cliArgs) ([]model.Device, error) {
 		return legacy.Devices, nil
 	}
 	st := config.New("")
-	if err := st.Load(); err != nil {
-		return nil, err
-	}
 	name := a.profile
 	if name == "" {
 		name = st.ActiveName()
+	} else {
+		found := false
+		for _, p := range st.ListProfiles() {
+			if p == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("档案 %q 不存在", name)
+		}
 	}
 	devices, err := st.ResolveDevices(name)
 	if err != nil {

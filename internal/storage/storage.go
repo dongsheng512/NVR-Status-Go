@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"nvrstatus/internal/model"
 	"nvrstatus/internal/util"
@@ -23,6 +24,9 @@ type Fetcher interface {
 type Service struct {
 	F   Fetcher
 	Log func(string)
+
+	cacheMu sync.Mutex
+	epCache map[string]string
 }
 
 // CheckCancel reports whether the caller cancelled the run.
@@ -36,10 +40,31 @@ type quietGetter interface {
 }
 
 func (s *Service) getQuiet(endpoint string) (string, error) {
-	if q, ok := s.F.(quietGetter); ok {
-		return q.GetQuiet(endpoint)
+	s.cacheMu.Lock()
+	if cached, ok := s.epCache[endpoint]; ok {
+		s.cacheMu.Unlock()
+		return cached, nil
 	}
-	return s.F.Get(endpoint)
+	s.cacheMu.Unlock()
+
+	var (
+		text string
+		err  error
+	)
+	if q, ok := s.F.(quietGetter); ok {
+		text, err = q.GetQuiet(endpoint)
+	} else {
+		text, err = s.F.Get(endpoint)
+	}
+	if err == nil && strings.TrimSpace(text) != "" {
+		s.cacheMu.Lock()
+		if s.epCache == nil {
+			s.epCache = map[string]string{}
+		}
+		s.epCache[endpoint] = text
+		s.cacheMu.Unlock()
+	}
+	return text, err
 }
 
 var overwriteBoolTags = []string{
@@ -170,8 +195,13 @@ func (s *Service) DiskOverwriteStatus(drives []model.Drive) model.DiskOverwrite 
 }
 
 func scanOverwrite(root *xmlnode.Node) (bool, string, string, bool) {
-	var walk func(*xmlnode.Node) (bool, string, string, bool)
-	walk = func(n *xmlnode.Node) (bool, string, string, bool) {
+	if root == nil {
+		return false, "", "", false
+	}
+	stack := []*xmlnode.Node{root}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
 		tag := n.Name
 		text := strings.TrimSpace(n.Text)
 		if text != "" {
@@ -204,14 +234,11 @@ func scanOverwrite(root *xmlnode.Node) (bool, string, string, bool) {
 				}
 			}
 		}
-		for _, c := range n.Children {
-			if b, t, raw, ok := walk(c); ok {
-				return b, t, raw, ok
-			}
+		for i := len(n.Children) - 1; i >= 0; i-- {
+			stack = append(stack, n.Children[i])
 		}
-		return false, "", "", false
 	}
-	return walk(root)
+	return false, "", "", false
 }
 
 func parseBoolish(val string) (bool, bool) {
@@ -243,8 +270,9 @@ func parseStrategy(val string) (bool, bool) {
 	}
 	if strings.Contains(v, "overwrite") || strings.Contains(v, "over_write") || strings.Contains(v, "cover") ||
 		strings.Contains(v, "cycle") || strings.Contains(v, "recycle") {
+		norm := strings.NewReplacer("_", "", "-", "", " ", "").Replace(v)
 		if strings.Contains(v, "stop") || strings.Contains(v, "disable") || strings.Contains(v, "forbid") ||
-			strings.Contains(v, "nooverwrite") || strings.Contains(v, "notoverwrite") {
+			strings.Contains(norm, "nooverwrite") || strings.Contains(norm, "notoverwrite") || strings.Contains(norm, "nonoverwrite") {
 			return false, true
 		}
 		return true, true

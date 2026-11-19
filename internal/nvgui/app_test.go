@@ -450,3 +450,31 @@ func TestScanDiffUsesPreviousArchive(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestFinishScanArchivesEverySuccessfulDevice(t *testing.T) {
+	app := newTestApp(t)
+	app.reports = []model.Report{
+		{DeviceName: "NVR-1", IP: "10.0.0.1", Health: model.HealthSummary{Status: "良好"}},
+		{DeviceName: "NVR-2", IP: "10.0.0.2", Error: "连接超时"},
+		{DeviceName: "NVR-3", IP: "10.0.0.3", Health: model.HealthSummary{Status: "警告"}},
+	}
+	app.finishScan(&app.reports[len(app.reports)-1])
+
+	if app.report != &app.reports[len(app.reports)-1] {
+		t.Fatal("app.report should point into app.reports slice")
+	}
+	entries, err := history.ListReports()
+	if err != nil {
+		t.Fatalf("ListReports: %v", err)
+	}
+	ips := map[string]bool{}
+	for _, e := range entries {
+		ips[e.IP] = true
+	}
+	if !ips["10.0.0.1"] || !ips["10.0.0.3"] {
+		t.Fatalf("expected both NVR-1 and NVR-3 archived, got %#v", ips)
+	}
+	if ips["10.0.0.2"] {
+		t.Fatalf("failed device NVR-2 should not be archived: %#v", ips)
+	}
+}

@@ -1219,3 +1219,57 @@ func TestProbeRecordUsesRecordURIDirectly(t *testing.T) {
 		t.Fatal("ProbeRecord did not call ffmpeg")
 	}
 }
+
+func TestPrepareAVSaveDirFailsFastOnInvalidRoot(t *testing.T) {
+	fileAsRoot := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(fileAsRoot, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{AVSave: true, AVSaveRoot: fileAsRoot}
+	if dir := svc.prepareAVSaveDir(); dir != "" {
+		t.Fatalf("prepareAVSaveDir = %q, want empty on non-dir root", dir)
+	}
+	if p, ok := reserveClipPath(fileAsRoot, "a.mkv"); ok || p != "" {
+		t.Fatalf("reserveClipPath = (%q, %v), want empty/false", p, ok)
+	}
+}
+
+func TestReserveClipPathUniqueUnderConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	const n = 16
+	paths := make(chan string, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			p, ok := reserveClipPath(dir, "ch1_cam_track101_120000.mkv")
+			if !ok {
+				paths <- ""
+				return
+			}
+			paths <- p
+		}()
+	}
+	seen := map[string]bool{}
+	for i := 0; i < n; i++ {
+		p := <-paths
+		if p == "" {
+			t.Fatal("reserveClipPath failed unexpectedly")
+		}
+		if seen[p] {
+			t.Fatalf("duplicate reserved path: %s", p)
+		}
+		seen[p] = true
+	}
+}
+
+func TestTailBufferCapsOutputAndKeepsTail(t *testing.T) {
+	b := newTailBuffer(32)
+	_, _ = b.Write([]byte(strings.Repeat("x", 100)))
+	_, _ = b.Write([]byte("mean_volume: -25.0 dB"))
+	got := b.String()
+	if len(got) > 32 {
+		t.Fatalf("len = %d, want <= 32", len(got))
+	}
+	if !strings.HasSuffix(got, "mean_volume: -25.0 dB") {
+		t.Fatalf("tail lost: %q", got)
+	}
+}

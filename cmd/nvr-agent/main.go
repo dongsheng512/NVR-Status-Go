@@ -138,6 +138,14 @@ func run(argv []string) int {
 		return 1
 	}
 
+	if a.interval <= 0 {
+		a.interval = 30 * time.Minute
+	}
+	ln, err := net.Listen("tcp", a.listen)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "HTTP 监听失败:", err)
+		return 1
+	}
 	server := &http.Server{
 		Addr:              a.listen,
 		Handler:           monitor.HandlerWith(mon, monitor.Options{Token: token}),
@@ -149,15 +157,12 @@ func run(argv []string) int {
 	serveErr := make(chan error, 1)
 	go func() {
 		fmt.Printf("NVR agent 监听 %s，间隔 %s\n", a.listen, a.interval)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 		}
 	}()
 
 	agent.scanOnce(ctx)
-	if a.interval <= 0 {
-		a.interval = 30 * time.Minute
-	}
 	ticker := time.NewTicker(a.interval)
 	defer ticker.Stop()
 	for {
@@ -225,7 +230,7 @@ func (a *agentRun) scanOnce(ctx context.Context) bool {
 	if a.webhook != "" {
 		// Deliberately synchronous: --once returns right after this call, so a
 		// detached goroutine would be killed before the POST goes out.
-		a.send(a.mon.Snapshot())
+		a.send(ctx, a.mon.Snapshot())
 	}
 	return true
 }
@@ -241,12 +246,12 @@ func (a *agentRun) runScan(ctx context.Context) []model.Report {
 	}, nil)
 }
 
-func (a *agentRun) send(snap monitor.Snapshot) {
+func (a *agentRun) send(ctx context.Context, snap monitor.Snapshot) {
 	if a.notify != nil {
 		a.notify(snap)
 		return
 	}
-	status, err := postWebhook(a.webhook, snap)
+	status, err := postWebhookCtx(ctx, a.webhook, snap)
 	if err != nil {
 		fmt.Fprintln(a.errOut, "Webhook 失败:", err)
 		return
@@ -313,12 +318,20 @@ func loadConfig(configPath, profile string) ([]model.Device, string, model.ScanO
 		return legacy.Devices, filepath.Base(configPath), model.DefaultScanOptions(), nil
 	}
 	st := config.New("")
-	if err := st.Load(); err != nil {
-		return nil, "", model.DefaultScanOptions(), err
-	}
 	name := profile
 	if name == "" {
 		name = st.ActiveName()
+	} else {
+		found := false
+		for _, p := range st.ListProfiles() {
+			if p == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, "", model.DefaultScanOptions(), fmt.Errorf("档案 %q 不存在", name)
+		}
 	}
 	prof, err := st.GetProfile(name)
 	if err != nil {
@@ -375,14 +388,25 @@ func webhookPayload(snap monitor.Snapshot) ([]byte, error) {
 var webhookBackoff = []time.Duration{time.Second, 2 * time.Second}
 
 func postWebhook(url string, snap monitor.Snapshot) (int, error) {
+	return postWebhookCtx(context.Background(), url, snap)
+}
+
+func postWebhookCtx(ctx context.Context, url string, snap monitor.Snapshot) (int, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	return postWebhookWith(client, url, snap, webhookBackoff)
+	return postWebhookWithContext(ctx, client, url, snap, webhookBackoff)
 }
 
 // postWebhookWith POSTs the payload, retrying on transport errors and on
 // 5xx/429. A 4xx means the receiver rejected the payload itself, so retrying
 // would only repeat the same rejection.
 func postWebhookWith(client *http.Client, url string, snap monitor.Snapshot, backoff []time.Duration) (int, error) {
+	return postWebhookWithContext(context.Background(), client, url, snap, backoff)
+}
+
+func postWebhookWithContext(ctx context.Context, client *http.Client, url string, snap monitor.Snapshot, backoff []time.Duration) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	u, err := neturl.Parse(url)
 	if err != nil {
 		return 0, fmt.Errorf("Webhook URL 无效: %w", err)
@@ -398,9 +422,18 @@ func postWebhookWith(client *http.Client, url string, snap monitor.Snapshot, bac
 	var lastErr error
 	for attempt := 0; attempt <= len(backoff); attempt++ {
 		if attempt > 0 {
-			time.Sleep(backoff[attempt-1])
+			timer := time.NewTimer(backoff[attempt-1])
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return lastStatus, ctx.Err()
+			case <-timer.C:
+			}
 		}
-		status, err := postOnce(client, url, body)
+		if err := ctx.Err(); err != nil {
+			return lastStatus, err
+		}
+		status, err := postOnce(ctx, client, url, body)
 		lastStatus, lastErr = status, err
 		if err == nil {
 			if status < 400 {
@@ -419,8 +452,8 @@ func postWebhookWith(client *http.Client, url string, snap monitor.Snapshot, bac
 	return lastStatus, fmt.Errorf("Webhook 返回 HTTP %d", lastStatus)
 }
 
-func postOnce(client *http.Client, url string, body []byte) (int, error) {
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+func postOnce(ctx context.Context, client *http.Client, url string, body []byte) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return 0, err
 	}

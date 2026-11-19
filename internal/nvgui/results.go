@@ -2,6 +2,9 @@ package nvgui
 
 import (
 	"fmt"
+	"net/url"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -90,7 +93,7 @@ func (a *App) resultHeader(c *ui.Context, t *ui.Theme) {
 			})
 			if a.report.AVSaveDir != "" {
 				ui.Button(c.Key("open-samples"), "样片目录").OnClick(func() {
-					c.Services().OpenURL("file://" + a.report.AVSaveDir)
+					c.Services().OpenURL(fileURL(a.report.AVSaveDir))
 				})
 			}
 		}
@@ -393,8 +396,19 @@ func channelNum(s string) int {
 	return n
 }
 
+func fileURL(path string) string {
+	slashed := filepath.ToSlash(path)
+	if runtime.GOOS == "windows" && !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return (&url.URL{Scheme: "file", Path: slashed}).String()
+}
+
 func rowIsProblem(r model.Record, deep bool) bool {
 	if r.RecordingOK != "" && r.RecordingOK != model.StatusOK && r.RecordingOK != model.StatusSkip {
+		return true
+	}
+	if r.DiskStatus != "" && r.DiskStatus != model.StatusOK && r.DiskStatus != model.StatusSkip {
 		return true
 	}
 	if r.Online == "false" {

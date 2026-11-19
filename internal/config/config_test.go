@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"nvrstatus/internal/model"
@@ -725,4 +726,57 @@ func TestSetActive(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdateProfileRenameDevicePreservesPassword(t *testing.T) {
+	kr := newFakeKeyring(true)
+	kr.install(t)
+	store := New(filepath.Join(t.TempDir(), "profiles.json"))
+	if err := store.UpdateProfile("默认", sampleProfile("1.2.3.4", "s3cret")); err != nil {
+		t.Fatal(err)
+	}
+	// Reload profile (password is stored in keyring, empty on disk), rename
+	// the device while keeping the same IP, and save again.
+	prof, err := store.GetProfile("默认")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prof.Devices[0].Name = "机房主NVR"
+	if err := store.UpdateProfile("默认", prof); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := store.ResolveDevices("默认")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 || devices[0].Password != "s3cret" {
+		t.Fatalf("password lost after renaming device: %#v (keyring=%#v)", devices, kr.store)
+	}
+}
+
+func TestStoreConcurrentReadWrite(t *testing.T) {
+	dir := t.TempDir()
+	store := New(filepath.Join(dir, "profiles.json"))
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				_ = store.ListProfiles()
+				_, _ = store.GetProfile("默认")
+				_ = store.ExportProfile("默认", filepath.Join(dir, "exp.json"))
+			}
+		}(i)
+	}
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				_ = store.UpdateProfile("默认", sampleProfile("10.0.0.1", "pw"))
+			}
+		}()
+	}
+	wg.Wait()
 }

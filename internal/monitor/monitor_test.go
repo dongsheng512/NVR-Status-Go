@@ -198,3 +198,27 @@ func TestHandlerWithoutTokenStaysOpen(t *testing.T) {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 }
+
+func TestMetricsBeforeFirstScanOutputsZeroTimestamp(t *testing.T) {
+	m := New()
+	out := m.Snapshot().Metrics()
+	if !strings.Contains(out, "nvr_scan_timestamp_seconds 0\n") {
+		t.Fatalf("expected 0 timestamp before first scan, got:\n%s", out)
+	}
+}
+
+func TestHTTPMethodNotAllowed(t *testing.T) {
+	m := New()
+	srv := httptest.NewServer(Handler(m))
+	defer srv.Close()
+	for _, path := range []string{"/healthz", "/metrics", "/api/reports"} {
+		resp, err := http.Post(srv.URL+path, "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("POST %s status = %d, want 405", path, resp.StatusCode)
+		}
+	}
+}

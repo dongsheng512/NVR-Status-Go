@@ -62,6 +62,11 @@ func ExportCSV(path string, r model.Report) error {
 	}); err != nil {
 		return err
 	}
+	if r.Error != "" {
+		if err := write("错误信息", r.Error); err != nil {
+			return err
+		}
+	}
 	for i, warning := range r.Health.Warnings {
 		if err := write(fmt.Sprintf("预警%d", i+1), warning); err != nil {
 			return err
@@ -143,6 +148,9 @@ func ExportCSV(path string, r model.Report) error {
 	w.Flush()
 	if err := w.Error(); err != nil {
 		return fmt.Errorf("写入 CSV 失败: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("关闭 CSV 文件失败: %w", err)
 	}
 	return nil
 }
@@ -263,8 +271,9 @@ func safeCell(value any) string {
 	if !ok {
 		return fmt.Sprint(value)
 	}
+	trimmed := strings.TrimLeft(text, " \t\r\n")
 	for _, prefix := range formulaPrefixes {
-		if strings.HasPrefix(text, prefix) {
+		if strings.HasPrefix(text, prefix) || strings.HasPrefix(trimmed, prefix) {
 			return "'" + text
 		}
 	}

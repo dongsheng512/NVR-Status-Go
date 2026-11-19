@@ -225,4 +225,20 @@ func TestRunVersionAndMissingPassword(t *testing.T) {
 	if code := run([]string{"-w", "pw"}); code != 1 {
 		t.Errorf("缺 IP 时退出码 = %d, 期望 1", code)
 	}
+	if code := run([]string{"-h"}); code != 0 {
+		t.Errorf("-h 退出码 = %d, 期望 0", code)
+	}
+}
+
+func TestParseArgsTrailingSelector(t *testing.T) {
+	a, err := parseArgs([]string{"--profile", "prod", "2"})
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	if a.profile != "prod" || a.selector != "2" {
+		t.Fatalf("profile=%q selector=%q, want prod/2", a.profile, a.selector)
+	}
+	if _, err := parseArgs([]string{"1", "--profile", "prod", "2"}); err == nil {
+		t.Fatal("duplicate positional selector should fail")
+	}
 }

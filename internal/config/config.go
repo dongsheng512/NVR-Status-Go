@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"nvrstatus/internal/credentials"
@@ -22,7 +23,9 @@ import (
 const appName = "NVRStatus"
 
 // Store owns one profiles.json file plus its in-memory representation.
+// All exported methods are safe for concurrent use.
 type Store struct {
+	mu   sync.RWMutex
 	Path string
 	Data model.Store
 }
@@ -88,6 +91,8 @@ func New(path string) *Store {
 // migrate a legacy nvr_config.json). Invalid JSON is backed up to
 // profiles.json.bak-<timestamp> before the store is reset to defaults.
 func (s *Store) Load() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.Path == "" {
 		s.Path = DefaultPath()
 	}
@@ -96,7 +101,7 @@ func (s *Store) Load() error {
 		if errors.Is(err, os.ErrNotExist) {
 			s.Data = defaultStore()
 			s.tryMigrateLegacy()
-			return s.Save()
+			return s.saveLocked()
 		}
 		// A transient read error (locked file, permissions) must not destroy
 		// the on-disk file. Keep defaults for this session and report it.
@@ -110,13 +115,13 @@ func (s *Store) Load() error {
 		s.backupCorrupt()
 		s.Data = defaultStore()
 		s.tryMigrateLegacy()
-		return s.Save()
+		return s.saveLocked()
 	}
 	s.Data = parsed
 	if empty {
 		// A syntactically valid file with an empty profiles map is reset to
 		// defaults and persisted (matching the Python loader).
-		return s.Save()
+		return s.saveLocked()
 	}
 	return nil
 }
@@ -124,6 +129,12 @@ func (s *Store) Load() error {
 // Save atomically writes the store: a unique temporary file in the target
 // directory is renamed over profiles.json (mode 0600 on Unix).
 func (s *Store) Save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked()
+}
+
+func (s *Store) saveLocked() error {
 	if s.Path == "" {
 		s.Path = DefaultPath()
 	}
@@ -171,6 +182,12 @@ func (s *Store) Save() error {
 
 // ListProfiles returns profile names in ascending order.
 func (s *Store) ListProfiles() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.listProfilesLocked()
+}
+
+func (s *Store) listProfilesLocked() []string {
 	names := make([]string, 0, len(s.Data.Profiles))
 	for name := range s.Data.Profiles {
 		names = append(names, name)
@@ -181,6 +198,12 @@ func (s *Store) ListProfiles() []string {
 
 // ActiveName returns the active profile name, defaulting to 默认.
 func (s *Store) ActiveName() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.activeNameLocked()
+}
+
+func (s *Store) activeNameLocked() string {
 	if s.Data.ActiveProfile == "" {
 		return "默认"
 	}
@@ -189,19 +212,27 @@ func (s *Store) ActiveName() string {
 
 // SetActive switches the active profile and persists the change.
 func (s *Store) SetActive(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, ok := s.Data.Profiles[name]; !ok {
 		return false
 	}
 	s.Data.ActiveProfile = name
-	return s.Save() == nil
+	return s.saveLocked() == nil
 }
 
 // GetProfile returns a deep copy of a profile. Missing profiles yield a
 // fully-populated default snapshot named after the request; they are never
 // inserted into the store.
 func (s *Store) GetProfile(name string) (*model.Profile, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.getProfileLocked(name)
+}
+
+func (s *Store) getProfileLocked(name string) (*model.Profile, error) {
 	if name == "" {
-		name = s.ActiveName()
+		name = s.activeNameLocked()
 	}
 	if stored, ok := s.Data.Profiles[name]; ok && stored != nil {
 		cp := cloneProfile(stored)
@@ -214,11 +245,17 @@ func (s *Store) GetProfile(name string) (*model.Profile, error) {
 // ResolveDevices returns the runtime device view for a profile, filling empty
 // passwords from the OS credential store when it is available.
 func (s *Store) ResolveDevices(name string) ([]model.Device, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.resolveDevicesLocked(name)
+}
+
+func (s *Store) resolveDevicesLocked(name string) ([]model.Device, error) {
 	profileName := name
 	if profileName == "" {
-		profileName = s.ActiveName()
+		profileName = s.activeNameLocked()
 	}
-	prof, err := s.GetProfile(profileName)
+	prof, err := s.getProfileLocked(profileName)
 	if err != nil {
 		return nil, err
 	}
@@ -242,8 +279,10 @@ func (s *Store) UpdateProfile(name string, p *model.Profile) error {
 	if p == nil {
 		return errors.New("profile 不能为空")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if name == "" {
-		name = s.ActiveName()
+		name = s.activeNameLocked()
 	}
 	next := cloneProfile(p)
 	next.Name = name
@@ -256,13 +295,15 @@ func (s *Store) UpdateProfile(name string, p *model.Profile) error {
 
 	next.Devices = migratePasswords(name, next.Devices)
 	s.Data.Profiles[name] = &next
-	return s.Save()
+	return s.saveLocked()
 }
 
 // CreateProfile creates a profile, optionally cloning an existing one, and
 // makes it active. The returned name may carry a numeric suffix when the
 // requested name already exists.
 func (s *Store) CreateProfile(name, cloneFrom string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	base := safeProfileName(name)
 	name = base
 	for i := 1; ; i++ {
@@ -298,7 +339,7 @@ func (s *Store) CreateProfile(name, cloneFrom string) (string, error) {
 	prof.Devices = migratePasswords(name, prof.Devices)
 	s.Data.Profiles[name] = prof
 	s.Data.ActiveProfile = name
-	if err := s.Save(); err != nil {
+	if err := s.saveLocked(); err != nil {
 		return name, err
 	}
 	return name, nil
@@ -307,6 +348,8 @@ func (s *Store) CreateProfile(name, cloneFrom string) (string, error) {
 // RenameProfile renames old to new, rekeying stored credentials. It returns
 // false when old does not exist or new is already taken.
 func (s *Store) RenameProfile(old, newName string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	newName = safeProfileName(newName)
 	if old == newName {
 		return true
@@ -329,12 +372,14 @@ func (s *Store) RenameProfile(old, newName string) bool {
 			credRekey(old, newName, d)
 		}
 	}
-	return s.Save() == nil
+	return s.saveLocked() == nil
 }
 
 // DeleteProfile removes a profile and purges its credentials. At least one
 // profile is always retained.
 func (s *Store) DeleteProfile(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	prof, ok := s.Data.Profiles[name]
 	if !ok || prof == nil {
 		return false
@@ -345,23 +390,26 @@ func (s *Store) DeleteProfile(name string) bool {
 	delete(s.Data.Profiles, name)
 	purgeKeyring(name, prof.Devices)
 	if s.Data.ActiveProfile == name {
-		for _, candidate := range s.ListProfiles() {
+		for _, candidate := range s.listProfilesLocked() {
 			s.Data.ActiveProfile = candidate
 			break
 		}
 	}
-	return s.Save() == nil
+	return s.saveLocked() == nil
 }
 
 // ExportProfile writes a single profile to path. Passwords are resolved from
 // the credential store so the export can migrate to another machine; the file
 // is written atomically with mode 0600 on Unix.
 func (s *Store) ExportProfile(name, path string) error {
-	prof, err := s.GetProfile(name)
+	s.mu.RLock()
+	prof, err := s.getProfileLocked(name)
 	if err != nil {
+		s.mu.RUnlock()
 		return err
 	}
-	devices, err := s.ResolveDevices(name)
+	devices, err := s.resolveDevicesLocked(name)
+	s.mu.RUnlock()
 	if err != nil {
 		return err
 	}
@@ -424,10 +472,12 @@ func (s *Store) ImportProfile(path, name string) (string, error) {
 		}
 	}
 	prof.Name = profileName
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	prof.Devices = migratePasswords(profileName, prof.Devices)
 	s.Data.Profiles[profileName] = prof
 	s.Data.ActiveProfile = profileName
-	if err := s.Save(); err != nil {
+	if err := s.saveLocked(); err != nil {
 		return profileName, err
 	}
 	return profileName, nil
@@ -630,17 +680,27 @@ func migratePasswords(profileName string, devices []model.Device) []model.Device
 	return devices
 }
 
+// deviceCredKey matches credentials.account's host key (IP, falling back to Name)
+// so renaming a device with the same IP never deletes its keychain entry.
+func deviceCredKey(d model.Device) string {
+	if ip := strings.TrimSpace(d.IP); ip != "" {
+		return ip
+	}
+	return strings.TrimSpace(d.Name)
+}
+
 func purgeStaleDevices(profileName string, oldDevices, newDevices []model.Device) {
 	if !credAvailable() {
 		return
 	}
-	type key struct{ ip, name string }
-	keep := make(map[key]bool, len(newDevices))
+	keep := make(map[string]bool, len(newDevices))
 	for _, d := range newDevices {
-		keep[key{strings.TrimSpace(d.IP), strings.TrimSpace(d.Name)}] = true
+		if k := deviceCredKey(d); k != "" {
+			keep[k] = true
+		}
 	}
 	for _, d := range oldDevices {
-		if !keep[key{strings.TrimSpace(d.IP), strings.TrimSpace(d.Name)}] {
+		if k := deviceCredKey(d); k != "" && !keep[k] {
 			credDelete(profileName, d)
 		}
 	}

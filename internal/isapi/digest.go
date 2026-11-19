@@ -118,8 +118,12 @@ func parseAuthParams(s string) map[string]string {
 	return params
 }
 
-// authorization builds the Authorization response for one request.
+// authorization builds the Authorization response for one request (nc=1).
 func (ch *digestChallenge) authorization(method, uri, username, password string) (string, error) {
+	return ch.authorizationWithNC(method, uri, username, password, 1)
+}
+
+func (ch *digestChallenge) authorizationWithNC(method, uri, username, password string, ncVal uint32) (string, error) {
 	algorithm := strings.ToUpper(strings.TrimSpace(ch.Algorithm))
 	if algorithm == "" {
 		algorithm = "MD5"
@@ -144,7 +148,10 @@ func (ch *digestChallenge) authorization(method, uri, username, password string)
 	}
 	ha2 := md5Hex(method + ":" + uri)
 
-	const nc = "00000001"
+	if ncVal == 0 {
+		ncVal = 1
+	}
+	nc := fmt.Sprintf("%08x", ncVal)
 	var response string
 	if qop != "" {
 		response = md5Hex(ha1 + ":" + ch.Nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + ha2)

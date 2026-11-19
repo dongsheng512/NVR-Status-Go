@@ -5,6 +5,7 @@ package recording
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"html"
 	randv2 "math/rand/v2"
@@ -132,28 +133,36 @@ func PhysicalChannel(tr *xmlnode.Node) string {
 
 // SaveAudio returns nil when the device does not expose the field.
 func SaveAudio(tr *xmlnode.Node) *bool {
-	var walk func(*xmlnode.Node) *bool
-	walk = func(n *xmlnode.Node) *bool {
+	if tr == nil {
+		return nil
+	}
+	stack := []*xmlnode.Node{tr}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
 		if n.Name == "SaveAudio" {
 			v := strings.ToLower(strings.TrimSpace(n.Text))
 			b := v == "true"
 			return &b
 		}
-		for _, c := range n.Children {
-			if r := walk(c); r != nil {
-				return r
-			}
+		for i := len(n.Children) - 1; i >= 0; i-- {
+			stack = append(stack, n.Children[i])
 		}
-		return nil
 	}
-	return walk(tr)
+	return nil
 }
 
 // RecordingStatus fetches plans, merges main/sub stream tracks and runs the
 // recent-disk check.
 func (s *Service) RecordingStatus() ([]model.Record, error) {
 	text, err := s.F.Get("/ContentMgmt/record/tracks")
-	if err != nil || strings.TrimSpace(text) == "" {
+	if err != nil {
+		if errors.Is(err, util.ErrCancelled) {
+			return nil, err
+		}
+		return []model.Record{}, nil
+	}
+	if strings.TrimSpace(text) == "" {
 		return []model.Record{}, nil
 	}
 	root, err := xmlnode.Parse(text)
@@ -281,6 +290,10 @@ func (s *Service) RecordingStatus() ([]model.Record, error) {
 		}
 		go func() {
 			defer close(jobs)
+			var cancelCh <-chan struct{}
+			if s.F != nil && s.F.Context() != nil {
+				cancelCh = s.F.Context().Done()
+			}
 			for n, idx := range toSearch {
 				if err := s.CheckCancel(); err != nil {
 					mu.Lock()
@@ -288,7 +301,14 @@ func (s *Service) RecordingStatus() ([]model.Record, error) {
 					mu.Unlock()
 					return
 				}
-				jobs <- job{idx: idx}
+				select {
+				case jobs <- job{idx: idx}:
+				case <-cancelCh:
+					mu.Lock()
+					cancelErr = util.ErrCancelled
+					mu.Unlock()
+					return
+				}
 				done := n + 1
 				if done == 1 || done == total || done%max(1, total/25) == 0 {
 					frac := float64(done) / float64(total)
@@ -300,7 +320,7 @@ func (s *Service) RecordingStatus() ([]model.Record, error) {
 		if cancelErr != nil {
 			return nil, cancelErr
 		}
-		for i := range records {
+		for _, i := range toSearch {
 			res := results[i]
 			if res.Status == "" {
 				res = SearchResult{Status: model.StatusUnknown, Detail: "未返回结果"}
@@ -481,12 +501,22 @@ func (s *Service) cmsearchPage(trackID string, start, end time.Time, maxResults,
 </CMSearchDescription>`, searchID, trackID, startS, endS, maxResults, max(0, position))
 
 	text, err := s.F.Post("/ContentMgmt/search", body)
-	if err != nil || strings.TrimSpace(text) == "" {
+	if err != nil {
 		return 0, nil, 0, err
 	}
+	if strings.TrimSpace(text) == "" {
+		return 0, nil, 0, errors.New("CMSearch 返回空响应")
+	}
 	root, err := xmlnode.Parse(text)
-	if err != nil || root.Name == "ResponseStatus" {
+	if err != nil {
 		return 0, nil, 0, err
+	}
+	if root.Name == "ResponseStatus" {
+		msg := root.FindText(".//statusString", "")
+		if msg == "" {
+			msg = root.FindText(".//subStatusCode", "ResponseStatus")
+		}
+		return 0, nil, 0, fmt.Errorf("CMSearch 设备返回错误: %s", msg)
 	}
 	matches := root.FindAll(".//searchMatchItem")
 	totalRaw := root.FindText(".//totalMatches", "")

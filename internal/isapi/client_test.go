@@ -339,3 +339,36 @@ func TestGetQuietSuppressesProbeWarnings(t *testing.T) {
 		t.Fatalf("GetQuiet logged %v, want silence", logs)
 	}
 }
+
+func TestDigestNonceReuseAvoidsSecond401(t *testing.T) {
+	var hits atomic.Int32
+	var seenNC2 atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			w.Header().Set("WWW-Authenticate", `Digest realm="NVR", nonce="nonce123", qop="auth", algorithm=MD5`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if strings.Contains(auth, "nc=00000002") {
+			seenNC2.Store(true)
+		}
+		_, _ = io.WriteString(w, "<ok/>")
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, nil)
+
+	if _, err := client.Get("/first"); err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	if _, err := client.Get("/second"); err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	if got := hits.Load(); got != 3 {
+		t.Fatalf("HTTP hits = %d, want 3 (401 + retry for /first, direct auth for /second)", got)
+	}
+	if !seenNC2.Load() {
+		t.Fatal("second request did not increment digest nc to 00000002")
+	}
+}

@@ -98,3 +98,58 @@ func TestDiskOverwriteInfer(t *testing.T) {
 		t.Fatalf("ow = %+v", ow)
 	}
 }
+
+func TestScanOverwriteDeeplyNested(t *testing.T) {
+	const depth = 20000
+	var b strings.Builder
+	b.WriteString(strings.Repeat("<a>", depth))
+	b.WriteString("<overWrite>true</overWrite>")
+	b.WriteString(strings.Repeat("</a>", depth))
+	f := &fakeFetcher{get: map[string]string{"/ContentMgmt/storage": b.String()}}
+	s := &Service{F: f}
+	ow := s.DiskOverwriteStatus(nil)
+	if ow.Enabled == nil || !*ow.Enabled {
+		t.Fatalf("ow = %+v, want enabled=true", ow)
+	}
+}
+
+func TestParseStrategyNegatedOverwrite(t *testing.T) {
+	for _, v := range []string{"no_overwrite", "not_overwrite", "no-overwrite", "not-overwrite", "non_overwrite", "non-overwrite"} {
+		got, ok := parseStrategy(v)
+		if !ok || got {
+			t.Errorf("parseStrategy(%q) = (%v, %v), want (false, true)", v, got, ok)
+		}
+	}
+}
+
+type countingFetcher struct {
+	get   map[string]string
+	calls map[string]int
+}
+
+func (f *countingFetcher) Get(endpoint string) (string, error) {
+	if f.calls == nil {
+		f.calls = map[string]int{}
+	}
+	f.calls[endpoint]++
+	return f.get[endpoint], nil
+}
+func (f *countingFetcher) Context() context.Context { return context.Background() }
+
+func TestStorageCachesEndpointWithinService(t *testing.T) {
+	f := &countingFetcher{get: map[string]string{
+		"/ContentMgmt/storage": `<Storage><hdd><hddName>hdd1</hddName><capacity>1048576</capacity><freeSpace>0</freeSpace><status>ok</status></hdd><overWrite>true</overWrite></Storage>`,
+	}}
+	s := &Service{F: f}
+	drives, err := s.StorageStatus()
+	if err != nil || len(drives) != 1 {
+		t.Fatalf("StorageStatus = (%d, %v)", len(drives), err)
+	}
+	ow := s.DiskOverwriteStatus(drives)
+	if ow.Enabled == nil || !*ow.Enabled {
+		t.Fatalf("ow = %+v", ow)
+	}
+	if got := f.calls["/ContentMgmt/storage"]; got != 1 {
+		t.Fatalf("/ContentMgmt/storage fetched %d times, want 1", got)
+	}
+}

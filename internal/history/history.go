@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"nvrstatus/internal/config"
@@ -20,6 +21,8 @@ import (
 // MaxReports is the maximum number of archived reports kept on disk. Older
 // files are pruned first.
 var MaxReports = 500
+
+var saveMu sync.Mutex
 
 // dataDir is indirected so tests can redirect the archive without touching the
 // real user data directory.
@@ -63,9 +66,13 @@ func SaveReport(r model.Report) (string, error) {
 	}
 	device = util.SafeFilename(device, 60)
 	base := fmt.Sprintf("%s_%s", stamp, device)
+
+	saveMu.Lock()
+	defer saveMu.Unlock()
+
 	path := filepath.Join(dir, base+".json")
 	for n := 1; ; n++ {
-		if _, err := os.Stat(path); err != nil {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
 			break
 		}
 		path = filepath.Join(dir, fmt.Sprintf("%s_%d.json", base, n))
@@ -81,8 +88,24 @@ func SaveReport(r model.Report) (string, error) {
 		return "", fmt.Errorf("序列化巡检报告失败: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, ".report-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("创建临时巡检报告失败: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return "", fmt.Errorf("写入巡检报告失败: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("关闭巡检报告失败: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return "", fmt.Errorf("设置巡检报告权限失败: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return "", fmt.Errorf("保存巡检报告失败: %w", err)
 	}
 	prune(dir)
 	return path, nil
@@ -181,7 +204,7 @@ func prune(dir string) {
 		}
 		files = append(files, file{path: filepath.Join(dir, entry.Name()), modTime: info.ModTime()})
 	}
-	if len(files) <= MaxReports {
+	if MaxReports <= 0 || len(files) <= MaxReports {
 		return
 	}
 	sort.Slice(files, func(i, j int) bool {

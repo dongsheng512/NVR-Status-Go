@@ -78,6 +78,9 @@ type App struct {
 	startupErr string
 	settings   Settings
 
+	ffmpegOnce sync.Once
+	ffmpegOK   bool
+
 	// profiles
 	profiles      []string
 	profile       string
@@ -474,13 +477,19 @@ func (a *App) startScan() {
 	a.logf(fmt.Sprintf("开始巡检：%s（%d 台设备）", a.target, len(devices)), "step")
 
 	go func() {
+		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				a.post(func() {
 					a.scanning = false
 					a.singleCheck = false
 					a.cancelScan = nil
+					a.currentNVR = nil
 					a.logf(fmt.Sprintf("巡检异常终止: %v", r), "error")
+					if a.scanDone != nil {
+						close(a.scanDone)
+						a.scanDone = nil
+					}
 				})
 			}
 		}()
@@ -506,22 +515,50 @@ func (a *App) startScan() {
 		if len(devices) == 1 {
 			rep := a.runner.RunWith(devices[0], opts, deviceName(devices[0], 0), progress, onNVR)
 			a.post(func() {
+				if ctx.Err() != nil {
+					a.finishScanCancelled()
+					return
+				}
 				a.reports = []model.Report{rep}
-				a.finishScan(&rep)
+				a.finishScan(&a.reports[0])
 			})
 			return
 		}
 		reps := a.runner.QueueWith(devices, opts, progress, nil, onNVR)
 		a.post(func() {
+			if ctx.Err() != nil {
+				a.finishScanCancelled()
+				return
+			}
 			a.reports = reps
-			if len(reps) > 0 {
-				last := reps[len(reps)-1]
-				a.finishScan(&last)
+			if len(a.reports) > 0 {
+				a.finishScan(&a.reports[len(a.reports)-1])
 			} else {
 				a.finishScan(nil)
 			}
 		})
 	}()
+}
+
+// finishScanCancelled resets scan state without overwriting the previously
+// displayed report or marking devices red when the user cancels a scan.
+func (a *App) finishScanCancelled() {
+	a.scanning = false
+	a.cancelScan = nil
+	a.currentNVR = nil
+	a.progressLabel = "巡检已取消"
+	a.logf("巡检已取消", "warn")
+	if a.scanDone != nil {
+		close(a.scanDone)
+		a.scanDone = nil
+	}
+}
+
+// Shutdown persists UI settings and cancels any active scan so child processes
+// (such as ffmpeg) are stopped before the desktop app exits.
+func (a *App) Shutdown() {
+	a.cancelRunning()
+	a.SaveSettings()
 }
 
 func (a *App) finishScan(rep *model.Report) {
@@ -531,6 +568,10 @@ func (a *App) finishScan(rep *model.Report) {
 	a.progress = 1
 	if rep == nil {
 		a.progressLabel = "巡检结束"
+		if a.scanDone != nil {
+			close(a.scanDone)
+			a.scanDone = nil
+		}
 		return
 	}
 	a.report = rep
@@ -548,22 +589,32 @@ func (a *App) finishScan(rep *model.Report) {
 		a.logf(fmt.Sprintf("巡检完成：%s（健康 %s）", rep.DeviceName, rep.Health.Status), levelForHealth(rep.Health.Status))
 	}
 	// Archive first: the diff below must compare against the *previous* scan, so
-	// the fresh file has to be excluded. Reading the archive can take hundreds
-	// of ms with many reports, hence the background computation.
-	savedPath := a.saveHistory(rep)
+	// each device's fresh file has to be excluded. Reading the archive can take
+	// hundreds of ms with many reports, hence the background computation.
+	reports := a.reports
+	if len(reports) == 0 {
+		reports = []model.Report{*rep}
+	}
+	savedPaths := make(map[string]string, len(reports))
+	var toDiff []model.Report
+	for i := range reports {
+		if reports[i].Error != "" {
+			continue
+		}
+		if p := a.saveHistory(&reports[i]); p != "" {
+			savedPaths[reports[i].IP] = p
+		}
+		toDiff = append(toDiff, reports[i])
+	}
 	a.diffs = map[string]*history.Diff{}
 	a.diff = nil
-	if rep.Error == "" {
-		reports := a.reports
-		if len(reports) == 0 {
-			reports = []model.Report{*rep}
-		}
+	if len(toDiff) > 0 {
 		seq := a.scanSeq
 		deviceIP := rep.IP
 		go func() {
-			diffs := make(map[string]*history.Diff, len(reports))
-			for _, r := range reports {
-				prev, err := history.LatestForDeviceExcept(r.IP, savedPath)
+			diffs := make(map[string]*history.Diff, len(toDiff))
+			for _, r := range toDiff {
+				prev, err := history.LatestForDeviceExcept(r.IP, savedPaths[r.IP])
 				if err != nil || prev == nil {
 					continue
 				}
@@ -652,11 +703,14 @@ func (a *App) runSingleCheck() {
 		return
 	}
 	opts := a.options()
+	seq := a.scanSeq
+	targetIP := a.report.IP
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancelScan = cancel
 	a.singleCheck = true
 	a.logf("开始单路抽检："+recs[0].Name, "step")
 	go func() {
+		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				a.post(func() {
@@ -689,11 +743,24 @@ func (a *App) runSingleCheck() {
 				a.logf("单路抽检失败: "+err.Error(), "error")
 				return
 			}
-			for _, u := range updated {
-				for i := range a.report.Records {
-					if a.report.Records[i].Channel == u.Channel {
-						a.report.Records[i] = u
+			if a.scanSeq != seq {
+				return
+			}
+			applyUpdate := func(records []model.Record) {
+				for _, u := range updated {
+					for i := range records {
+						if records[i].Channel == u.Channel {
+							records[i] = u
+						}
 					}
+				}
+			}
+			if a.report != nil && a.report.IP == targetIP {
+				applyUpdate(a.report.Records)
+			}
+			for i := range a.reports {
+				if a.reports[i].IP == targetIP && (a.report == nil || &a.reports[i] != a.report) {
+					applyUpdate(a.reports[i].Records)
 				}
 			}
 			a.logf("单路抽检完成："+recs[0].Name, "ok")
@@ -867,9 +934,13 @@ func levelForHealth(status string) string {
 }
 
 // ffmpegAvailable reports whether the bundled/PATH ffmpeg tools exist.
+// Cached per App instance so 60fps UI rendering does not re-stat PATH every frame.
 func (a *App) ffmpegAvailable() bool {
-	t := util.Tools()
-	return t["ffmpeg"] != "" && t["ffprobe"] != ""
+	a.ffmpegOnce.Do(func() {
+		t := util.Tools()
+		a.ffmpegOK = t["ffmpeg"] != "" && t["ffprobe"] != ""
+	})
+	return a.ffmpegOK
 }
 
 func formatPercent(v float64) string {

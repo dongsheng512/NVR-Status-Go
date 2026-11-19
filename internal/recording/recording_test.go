@@ -251,3 +251,67 @@ func TestJudgeRecordingOK(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordingStatusKeepsSkipForUnconfiguredChannel(t *testing.T) {
+	tracksXML := `<TrackList>
+  <Track>
+    <id>101</id>
+    <Channel>101</Channel>
+    <SrcChannel>1</SrcChannel>
+    <Schedule><enabled>false</enabled></Schedule>
+  </Track>
+</TrackList>`
+	f := &fakeFetcher{
+		get: map[string]string{"/ContentMgmt/record/tracks": tracksXML},
+		loc: time.UTC,
+	}
+	s := &Service{
+		F:                  f,
+		LookbackMinutes:    60,
+		CheckDiskRecording: true,
+		SearchWorkers:      2,
+	}
+	recs, err := s.RecordingStatus()
+	if err != nil {
+		t.Fatalf("RecordingStatus: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("len(recs) = %d, want 1", len(recs))
+	}
+	if recs[0].DiskStatus != model.StatusSkip {
+		t.Fatalf("DiskStatus = %q, want %q (detail=%q)", recs[0].DiskStatus, model.StatusSkip, recs[0].DiskDetail)
+	}
+	if recs[0].DiskDetail != "未配置录像计划" {
+		t.Fatalf("DiskDetail = %q, want 未配置录像计划", recs[0].DiskDetail)
+	}
+}
+
+func TestSaveAudioDeeplyNested(t *testing.T) {
+	const depth = 20000
+	var b strings.Builder
+	b.WriteString(strings.Repeat("<a>", depth))
+	b.WriteString("<SaveAudio>true</SaveAudio>")
+	b.WriteString(strings.Repeat("</a>", depth))
+	root, err := xmlnode.Parse(b.String())
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := SaveAudio(root)
+	if got == nil || !*got {
+		t.Fatalf("SaveAudio = %v, want true", got)
+	}
+}
+
+func TestSearchTrackRecentResponseStatusIsUnknown(t *testing.T) {
+	f := &fakeFetcher{
+		post: map[string]string{
+			"/ContentMgmt/search": `<ResponseStatus><statusCode>6</statusCode><statusString>Invalid Content</statusString></ResponseStatus>`,
+		},
+		loc: time.UTC,
+	}
+	s := &Service{F: f, LookbackMinutes: 60}
+	res := s.SearchTrackRecent("101")
+	if res.Status != model.StatusUnknown {
+		t.Fatalf("Status = %q, want %q (detail=%q)", res.Status, model.StatusUnknown, res.Detail)
+	}
+}

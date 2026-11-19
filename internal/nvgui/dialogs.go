@@ -369,27 +369,30 @@ func (a *App) commitProfileDialog() {
 	}
 	switch a.profileDialog {
 	case profileDialogNew:
-		if _, err := a.store.CreateProfile(name, ""); err != nil {
+		created, err := a.store.CreateProfile(name, "")
+		if err != nil {
 			a.profileErr = err.Error()
 			return
 		}
 		a.reloadProfiles()
-		a.applyProfile(name)
+		a.applyProfile(created)
 	case profileDialogSaveAs:
 		a.saveProfile()
-		if _, err := a.store.CreateProfile(name, a.profile); err != nil {
+		created, err := a.store.CreateProfile(name, a.profile)
+		if err != nil {
 			a.profileErr = err.Error()
 			return
 		}
 		a.reloadProfiles()
-		a.applyProfile(name)
+		a.applyProfile(created)
 	case profileDialogRename:
 		if !a.store.RenameProfile(a.profile, name) {
 			a.profileErr = "重命名失败：档案不存在或名称重复"
 			return
 		}
-		a.profile = name
-		a.profileChoice = name
+		active := a.store.ActiveName()
+		a.profile = active
+		a.profileChoice = active
 		a.reloadProfiles()
 	}
 	a.profileDialog = profileDialogNone
@@ -429,16 +432,17 @@ func (a *App) importProfile() {
 
 func (a *App) exportProfile() {
 	a.saveProfile()
+	profile := a.profile
 	go func() {
 		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{
 			Title:       "导出配置档案",
-			DefaultPath: a.profile + ".json",
+			DefaultPath: profile + ".json",
 			Filters:     []mygo.FileFilter{{Name: "JSON", Extensions: []string{"json"}}},
 		})
 		if err != nil || path == "" {
 			return
 		}
-		if err := a.store.ExportProfile(a.profile, path); err != nil {
+		if err := a.store.ExportProfile(profile, path); err != nil {
 			a.logFromWorker("导出档案失败: "+err.Error(), "error")
 			return
 		}

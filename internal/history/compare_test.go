@@ -60,3 +60,18 @@ func TestLatestForDevice(t *testing.T) {
 		t.Fatalf("rep=%+v err=%v dir=%s", rep, err, dir)
 	}
 }
+
+func TestCompareSkipsChannelDiffOnErrorReport(t *testing.T) {
+	prev := model.Report{
+		Health:  model.HealthSummary{Status: "严重"},
+		Records: []model.Record{rec("1", "前门", model.StatusBad, "false")},
+	}
+	cur := model.Report{
+		Health: model.HealthSummary{Status: "未知"},
+		Error:  "连接超时",
+	}
+	d := Compare(prev, cur)
+	if len(d.Resolved) != 0 || len(d.NewIssues) != 0 || len(d.StillBad) != 0 {
+		t.Fatalf("error report should not mark prior issues resolved: %+v", d)
+	}
+}

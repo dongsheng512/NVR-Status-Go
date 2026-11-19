@@ -25,6 +25,11 @@ func Handler(m *Monitor) http.Handler {
 func HandlerWith(m *Monitor, opt Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", guard(opt.Token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		s := m.Snapshot()
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		code := http.StatusOK
@@ -33,20 +38,40 @@ func HandlerWith(m *Monitor, opt Options) http.Handler {
 			code = http.StatusServiceUnavailable
 			status = "degraded"
 		}
+		var failed []string
+		for _, rep := range s.Reports {
+			if rep.Error != "" || rep.Health.Status == "严重" {
+				name := rep.DeviceName
+				if name == "" {
+					name = rep.IP
+				}
+				failed = append(failed, name)
+			}
+		}
 		w.WriteHeader(code)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":       status,
 			"scanned_at":   s.ScannedAt,
 			"duration":     s.Duration,
 			"device_count": len(s.Reports),
-			"reports":      s.Reports,
+			"failed":       failed,
 		})
 	}))
 	mux.HandleFunc("/metrics", guard(opt.Token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = w.Write([]byte(m.Snapshot().Metrics()))
 	}))
 	mux.HandleFunc("/api/reports", guard(opt.Token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(m.Snapshot())
 	}))

@@ -127,3 +127,15 @@ func TestParseXMLTextTrimsOuterWhitespace(t *testing.T) {
 		t.Fatalf("text still contains newline: %q", got)
 	}
 }
+
+func TestParseXMLDeeplyNestedDescendants(t *testing.T) {
+	const depth = 20000
+	var b strings.Builder
+	b.WriteString(strings.Repeat("<a>", depth))
+	b.WriteString("<target>deep</target>")
+	b.WriteString(strings.Repeat("</a>", depth))
+	root := mustParseXML(t, b.String())
+	if got := root.FindText(".//target", ""); got != "deep" {
+		t.Fatalf("FindText(.//target) = %q, want deep", got)
+	}
+}

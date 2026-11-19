@@ -67,7 +67,11 @@ func (s Snapshot) Metrics() string {
 	var b strings.Builder
 	b.WriteString("# HELP nvr_scan_timestamp_seconds Unix time of the latest scan.\n")
 	b.WriteString("# TYPE nvr_scan_timestamp_seconds gauge\n")
-	fmt.Fprintf(&b, "nvr_scan_timestamp_seconds %.0f\n", float64(s.ScannedAt.Unix()))
+	var ts float64
+	if !s.ScannedAt.IsZero() {
+		ts = float64(s.ScannedAt.Unix())
+	}
+	fmt.Fprintf(&b, "nvr_scan_timestamp_seconds %.0f\n", ts)
 	b.WriteString("# HELP nvr_scan_duration_seconds Duration of the latest scan.\n")
 	b.WriteString("# TYPE nvr_scan_duration_seconds gauge\n")
 	fmt.Fprintf(&b, "nvr_scan_duration_seconds %.3f\n", s.Duration)

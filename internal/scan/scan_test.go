@@ -3,6 +3,7 @@ package scan
 import (
 	"testing"
 
+	"nvrstatus/internal/limit"
 	"nvrstatus/internal/model"
 )
 
@@ -101,5 +102,15 @@ func TestErrorReportCarriesOptions(t *testing.T) {
 	rep := errorReport(n, "NVR-A", "boom")
 	if rep.Error != "boom" || rep.DeviceName != "NVR-A" || rep.AVSeconds != 5 {
 		t.Fatalf("report = %+v", rep)
+	}
+}
+
+func TestBuildWiresGlobalAV(t *testing.T) {
+	lim := limit.New(3)
+	r := NewRunner(Options{Quiet: true, Tools: fakeTools, GlobalAV: lim})
+	n := r.Build(testDevice(), model.DefaultScanOptions())
+	defer n.Client.Close()
+	if n.AV.GlobalAV != lim {
+		t.Fatalf("GlobalAV not wired to avprobe.Service: got %p, want %p", n.AV.GlobalAV, lim)
 	}
 }

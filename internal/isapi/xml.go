@@ -95,17 +95,24 @@ func (n *Node) FindAll(path string) []*Node {
 }
 
 func (n *Node) descendants(tag string) []*Node {
+	if n == nil {
+		return nil
+	}
 	var out []*Node
-	var walk func(*Node)
-	walk = func(cur *Node) {
-		for _, child := range cur.Children {
-			if child.Tag == tag {
-				out = append(out, child)
-			}
-			walk(child)
+	stack := make([]*Node, 0, len(n.Children))
+	for i := len(n.Children) - 1; i >= 0; i-- {
+		stack = append(stack, n.Children[i])
+	}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if cur.Tag == tag {
+			out = append(out, cur)
+		}
+		for i := len(cur.Children) - 1; i >= 0; i-- {
+			stack = append(stack, cur.Children[i])
 		}
 	}
-	walk(n)
 	return out
 }
 
