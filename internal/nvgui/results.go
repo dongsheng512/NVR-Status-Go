@@ -11,6 +11,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"nvrstatus/internal/model"
+	"nvrstatus/internal/util"
 )
 
 func (a *App) content(c *ui.Context, t *ui.Theme) {
@@ -59,7 +60,14 @@ func (a *App) resultHeader(c *ui.Context, t *ui.Theme) {
 				if a.report.Error != "" {
 					sub = fmt.Sprintf("%s · 连接失败", a.report.IP)
 				} else {
-					sub = fmt.Sprintf("%s · 健康 %s", a.report.IP, a.report.Health.Status)
+					parts := []string{a.report.IP}
+					if m := strings.TrimSpace(a.report.Info["型号"]); m != "" {
+						parts = append(parts, m)
+					}
+					if fw := strings.TrimSpace(a.report.Info["固件版本"]); fw != "" {
+						parts = append(parts, "固件 "+fw)
+					}
+					sub = strings.Join(parts, " · ")
 				}
 				if len(a.reports) > 1 {
 					ok := 0
@@ -68,7 +76,7 @@ func (a *App) resultHeader(c *ui.Context, t *ui.Theme) {
 							ok++
 						}
 					}
-					sub = fmt.Sprintf("%d/%d 台成功 · %s", ok, len(a.reports), a.report.DeviceName)
+					sub = fmt.Sprintf("%d/%d 台成功 · %s", ok, len(a.reports), sub)
 				}
 			}
 			ui.Text(c, sub).FontSize(11).TextColor(t.TextMuted)
@@ -144,8 +152,14 @@ func (a *App) warnSection(c *ui.Context, t *ui.Theme) {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, fmt.Sprintf("预警 %d 条", len(warns))).FontSize(12).Bold().TextColor(t.Warning)
 			ui.Spacer(c)
-			if ui.Button(c.Key("warn-toggle"), "展开/收起").FontSize(10).Clicked() {
-				a.warnExpanded = !a.warnExpanded
+			if len(warns) > 2 {
+				toggleLabel := fmt.Sprintf("展开全部 (%d)", len(warns))
+				if a.warnExpanded {
+					toggleLabel = "收起"
+				}
+				if ui.Button(c.Key("warn-toggle"), toggleLabel).FontSize(10).Clicked() {
+					a.warnExpanded = !a.warnExpanded
+				}
 			}
 		})
 		shown := warns
@@ -188,7 +202,6 @@ func (a *App) diffSection(c *ui.Context, t *ui.Theme) {
 func (a *App) metrics(c *ui.Context, t *ui.Theme) {
 	st := a.report.Health.Stats
 	ui.Row(c).Gap(8).Children(func() {
-		a.metricCard(c, t, "整体状态", a.report.Health.Status, "健康判定", a.report.Health.Status)
 		a.metricCard(c, t, "摄像头在线", fmt.Sprintf("%d/%d", st.Online, st.CameraTotal),
 			joinNonZero("离线", st.Offline, "未确认", st.Unconfirmed, "检测异常", st.DetectBad), toneForCount(st.Offline))
 		a.metricCard(c, t, "录像", fmt.Sprintf("%d/%d", st.RecordingOK, st.ChannelTotal),
@@ -263,11 +276,22 @@ func overwriteTone(v *bool) string {
 }
 
 func (a *App) channelTable(c *ui.Context, t *ui.Theme) {
-	ui.Row(c).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, fmt.Sprintf("通道 · %d 路", len(a.report.Records))).FontSize(12).Bold()
+	records := a.visibleRecords()
+	ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+		title := fmt.Sprintf("通道 · %d 路", len(a.report.Records))
+		if len(records) != len(a.report.Records) {
+			title = fmt.Sprintf("通道 · %d/%d 路", len(records), len(a.report.Records))
+		}
+		ui.Text(c, title).FontSize(12).Bold()
 		ui.Spacer(c)
-		ui.Toggle(c.Key("only-problem"), &a.onlyProblem, "仅异常").FontSize(11)
-		if ui.Button(c.Key("copy-row"), "复制").FontSize(10).Clicked() {
+		ui.TextInput(c.Key("channel-filter"), &a.channelFilter).Placeholder("筛选通道/名称…").FontSize(11).Width(140).Height(28)
+		ui.Toggle(c.Key("only-problem"), &a.onlyProblem, "仅异常").FontSize(11).Height(28)
+		ui.Button(c.Key("single"), "单路抽检").FontSize(11).Height(28).
+			Disabled(a.selectedRow < 0 || a.scanning || a.singleCheck).
+			Tooltip("对选中的通道执行音视频抽检").
+			OnClick(a.runSingleCheck)
+		if ui.Button(c.Key("copy-row"), "复制").FontSize(11).Height(28).
+			Disabled(a.selectedRow < 0).Clicked() {
 			if a.selectedRow >= 0 && a.selectedRow < len(a.report.Records) {
 				r := a.report.Records[a.selectedRow]
 				c.Services().WriteClipboard(copyLine(r))
@@ -275,29 +299,30 @@ func (a *App) channelTable(c *ui.Context, t *ui.Theme) {
 			}
 		}
 	})
-	records := a.visibleRecords()
 	if len(records) == 0 {
+		a.selectedRow = -1
 		ui.Column(c).Grow(1).Center().Children(func() {
 			ui.Text(c, "没有符合筛选的通道").FontSize(12).TextColor(t.TextMuted)
 		})
 		return
 	}
-	a.syncTableSelection(records)
 	cols := []ui.TableColumn{
-		{Title: "通道", ID: "channel", Width: 52, Align: ui.End, Sortable: true},
-		{Title: "名称", ID: "name", Width: 150},
-		{Title: "在线", ID: "online", Width: 56, Align: ui.Center},
-		{Title: "模式", ID: "mode", Width: 78},
-		{Title: "音频", ID: "audio", Width: 48, Align: ui.Center},
-		{Title: "录像", ID: "recording", Width: 56, Align: ui.Center},
-		{Title: "落盘", ID: "disk", Width: 56, Align: ui.Center},
+		{Title: "通道", ID: "channel", Width: 50, Align: ui.End, Sortable: true},
+		{Title: "名称", ID: "name", Width: 132},
+		{Title: "在线", ID: "online", Width: 52, Align: ui.Center},
+		{Title: "模式", ID: "mode", Width: 76},
+		{Title: "音频", ID: "audio", Width: 52, Align: ui.Center},
+		{Title: "录像", ID: "recording", Width: 52, Align: ui.Center},
+		{Title: "落盘", ID: "disk", Width: 52, Align: ui.Center},
 	}
 	if a.report.DeepAVCheck {
 		cols = append(cols,
-			ui.TableColumn{Title: "视频", ID: "video", Width: 50, Align: ui.Center},
-			ui.TableColumn{Title: "音频抽检", ID: "audio_probe", Width: 76, Align: ui.Center},
+			ui.TableColumn{Title: "视频", ID: "video", Width: 48, Align: ui.Center},
+			ui.TableColumn{Title: "音频抽检", ID: "audio_probe", Width: 72, Align: ui.Center},
 		)
 	}
+	cols = append(cols, ui.TableColumn{Title: "详情", ID: "detail", Width: 220})
+	detailCol := len(cols) - 1
 	tbl := ui.Table(c, &a.table, cols, len(records), func(row, col int) {
 		r := records[row]
 		switch col {
@@ -315,12 +340,20 @@ func (a *App) channelTable(c *ui.Context, t *ui.Theme) {
 			ui.Text(c, statusOr(r.RecordingOK, model.StatusUnknown)).TextColor(statusColor(t, r.RecordingOK))
 		case 6:
 			ui.Text(c, statusOr(r.DiskStatus, model.StatusUnknown)).TextColor(statusColor(t, r.DiskStatus))
+		case detailCol:
+			summary := recordDetailSummary(r, a.report.DeepAVCheck)
+			color := t.TextMuted
+			if rowIsProblem(r, a.report.DeepAVCheck) && summary != "" {
+				color = t.Warning
+			}
+			ui.Text(c, summary).FontSize(10).TextColor(color).SingleLine()
 		case 7:
 			ui.Text(c, statusOr(r.VideoProbe, model.StatusSkip)).TextColor(statusColor(t, r.VideoProbe))
 		case 8:
 			ui.Text(c, statusOr(r.AudioProbe, model.StatusSkip)).TextColor(statusColor(t, r.AudioProbe))
 		}
 	}).Grow(1)
+	a.syncTableSelection(records)
 	if tbl.Submitted() {
 		a.openDetail(a.selectedRow)
 	}
@@ -341,9 +374,15 @@ func (a *App) channelTable(c *ui.Context, t *ui.Theme) {
 }
 
 func (a *App) visibleRecords() []model.Record {
+	query := strings.ToLower(strings.TrimSpace(a.channelFilter))
 	var out []model.Record
 	for _, r := range a.report.Records {
 		if a.onlyProblem && !rowIsProblem(r, a.report.DeepAVCheck) {
+			continue
+		}
+		if query != "" &&
+			!strings.Contains(strings.ToLower(r.Channel), query) &&
+			!strings.Contains(strings.ToLower(r.Name), query) {
 			continue
 		}
 		out = append(out, r)
@@ -370,10 +409,12 @@ func (a *App) visibleRecords() []model.Record {
 
 func (a *App) syncTableSelection(records []model.Record) {
 	if a.table.Selected == nil {
+		a.selectedRow = -1
 		return
 	}
 	idx := *a.table.Selected
 	if idx < 0 || idx >= len(records) {
+		a.selectedRow = -1
 		return
 	}
 	want := records[idx]
@@ -383,6 +424,26 @@ func (a *App) syncTableSelection(records []model.Record) {
 			return
 		}
 	}
+	a.selectedRow = -1
+}
+
+func recordDetailSummary(r model.Record, deep bool) string {
+	if deep && r.ProbeDetail != "" && (r.VideoProbe != model.StatusOK || r.AudioProbe != model.StatusOK) {
+		return r.ProbeDetail
+	}
+	if r.DiskStatus != "" && r.DiskStatus != model.StatusOK && r.DiskStatus != model.StatusSkip && r.DiskDetail != "" {
+		return r.DiskDetail
+	}
+	if r.Online == "false" {
+		return "摄像头离线"
+	}
+	if r.HasAudio != nil && !*r.HasAudio {
+		return "未开启音频录制"
+	}
+	if r.Resolution != "" {
+		return r.Resolution
+	}
+	return r.DiskDetail
 }
 
 func channelNum(s string) int {
@@ -432,19 +493,22 @@ func (a *App) drivesSection(c *ui.Context, t *ui.Theme) {
 	if len(a.report.Drives) == 0 {
 		return
 	}
-	ui.Row(c).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, fmt.Sprintf("硬盘 · %d 块", len(a.report.Drives))).FontSize(12).Bold()
-		ui.Spacer(c)
-		ui.Text(c, "循环覆盖: "+a.report.DiskOverwrite.Label).FontSize(10).
-			TextColor(statusColor(t, overwriteTone(a.report.DiskOverwrite.Enabled)))
-	})
-	ui.Column(c).Gap(2).Children(func() {
+	ui.Column(c).Padding(8, 12).Gap(6).Radius(8).Background(t.Surface).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, fmt.Sprintf("硬盘 · %d 块", len(a.report.Drives))).FontSize(12).Bold()
+			ui.Spacer(c)
+			ui.Text(c, "循环覆盖: "+a.report.DiskOverwrite.Label).FontSize(10).
+				TextColor(statusColor(t, overwriteTone(a.report.DiskOverwrite.Enabled)))
+		})
 		for _, d := range a.report.Drives {
-			ui.Row(c).Gap(10).Children(func() {
-				ui.Text(c, d.Name).FontSize(11).Bold().Width(80)
-				ui.Text(c, d.Type).FontSize(10).TextColor(t.TextMuted).Width(60)
-				ui.Text(c, d.CapacityTB+" TB").FontSize(10).TextColor(t.TextMuted).Width(70)
-				ui.Text(c, d.Usage).FontSize(10).TextColor(statusColor(t, usageTone(d.Usage)))
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, d.Name).FontSize(11).Bold().Width(72).SingleLine()
+				ui.Text(c, d.Type).FontSize(10).TextColor(t.TextMuted).Width(52).SingleLine()
+				ui.Text(c, d.CapacityTB+" TB").FontSize(10).TextColor(t.TextMuted).Width(64).SingleLine()
+				if pct, ok := util.ParsePercent(d.Usage); ok {
+					ui.Progress(c, clampFloat(pct/100.0, 0, 1)).Width(120)
+				}
+				ui.Text(c, d.Usage).FontSize(10).TextColor(statusColor(t, usageTone(d.Usage))).Width(52)
 				ui.Spacer(c)
 				ui.Text(c, driveLabel(d.Status)).FontSize(10).TextColor(statusColor(t, driveLabel(d.Status)))
 			})

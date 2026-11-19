@@ -59,7 +59,7 @@ func TestTableShowsRecords(t *testing.T) {
 	if !tt.HasText("前门") {
 		t.Fatalf("table missing record name; texts=%v", tt.Texts())
 	}
-	if !tt.HasText("整体状态") {
+	if !tt.HasText("摄像头在线") || !tt.HasText("硬盘") {
 		t.Fatalf("missing metrics; texts=%v", tt.Texts())
 	}
 }

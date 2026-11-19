@@ -136,17 +136,18 @@ type App struct {
 	logScroll ui.ScrollState
 
 	// results
-	report       *model.Report
-	reports      []model.Report
-	resultDevice string
-	diff         *history.Diff
-	diffs        map[string]*history.Diff
-	selectedRow  int
-	table        ui.ListState
-	onlyProblem  bool
-	detailOpen   bool
-	detailRecord model.Record
-	warnExpanded bool
+	report        *model.Report
+	reports       []model.Report
+	resultDevice  string
+	diff          *history.Diff
+	diffs         map[string]*history.Diff
+	selectedRow   int
+	table         ui.ListState
+	onlyProblem   bool
+	channelFilter string
+	detailOpen    bool
+	detailRecord  model.Record
+	warnExpanded  bool
 
 	// history
 	lastHealth       map[string]string // device IP -> last scan verdict

@@ -12,7 +12,7 @@ func (a *App) sidebar(c *ui.Context, t *ui.Theme) {
 	bar := c.TitleBar()
 	ui.Column(c).Fill().AlignItems(ui.Stretch).Background(t.Surface).Children(func() {
 		// With the native title bar hidden the sidebar runs to the window's
-		// top edge. The header leaves the traffic lights their inset and is
+		// top edge. Keep the brand header inline with the traffic lights as
 		// the window's drag handle.
 		ui.Row(c).MinHeight(maxFloat(bar.Height+20, 46)).
 			Padding(0, bar.Right+14, 0, bar.Left+10).AlignItems(ui.Center).DragWindow().
@@ -24,7 +24,7 @@ func (a *App) sidebar(c *ui.Context, t *ui.Theme) {
 			ui.Divider(c)
 			a.deviceSection(c, t)
 			ui.Divider(c)
-			a.settingsButton(c, t)
+			a.settingsBar(c, t)
 			a.actions(c, t)
 			a.logSection(c, t)
 			a.footer(c, t)
@@ -147,7 +147,6 @@ func (a *App) deviceSection(c *ui.Context, t *ui.Theme) {
 			ui.Text(c, status).FontSize(10).TextColor(statusColor(t, status))
 		}
 	})
-	ui.Text(c, "点击上方切换巡检设备").FontSize(9).TextColor(t.TextMuted)
 }
 
 func (a *App) currentTargetLabel() string {
@@ -182,50 +181,34 @@ func (a *App) targetNames() []string {
 	return out
 }
 
-func (a *App) settingsButton(c *ui.Context, t *ui.Theme) {
-	label := a.settingsButtonLabel()
-	ui.Button(c.Key("settings-toggle"), label).FontSize(11).
-		Tooltip("打开扫描设置").OnClick(func() { a.settingsOpen = true })
-}
-
-func (a *App) settingsButtonLabel() string {
-	return "扫描设置  ·  " + a.settingsSummary()
-}
-
-func (a *App) settingsSummary() string {
-	o := a.options()
-	deep := "快速"
-	if o.DeepAVCheck || o.AVSave {
-		deep = "深度"
-	}
-	return fmt.Sprintf("%s · 近%d分钟 · 并发%d", deep, o.Lookback, o.Workers)
-}
-
-func (a *App) actions(c *ui.Context, t *ui.Theme) {
-	target := a.target
-	if target == "" || target == allDevices {
-		target = fmt.Sprintf("%s（%d 台）", allDevices, len(a.devices))
-	}
-	ui.Textf(c, "巡检目标：%s", target).FontSize(10).TextColor(t.TextMuted).SingleLine()
+func (a *App) settingsBar(c *ui.Context, t *ui.Theme) {
 	ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-		ui.Toggle(c.Key("quick-deep"), &a.opt.DeepAVCheck, "深度抽检").FontSize(11).
-			Tooltip("启用短时 RTSP 音视频抽检").
+		ui.Button(c.Key("settings-toggle"), a.settingsButtonLabel()).FontSize(11).Grow(1).
+			Tooltip("打开扫描设置").OnClick(func() { a.settingsOpen = true })
+		ui.Toggle(c.Key("quick-deep"), &a.opt.DeepAVCheck, "深度抽检").FontSize(11).Shrink(0).
+			Tooltip("快速切换短时 RTSP 音视频抽检").
 			OnChange(func() {
 				if !a.opt.DeepAVCheck {
 					a.opt.AVSave = false
 				}
 				a.saveProfile()
 			})
-		switch {
-		case a.opt.DeepAVCheck && a.ffmpegAvailable():
-			ui.Text(c, "RTSP 抽检已启用").FontSize(9).TextColor(t.Accent)
-		case a.opt.DeepAVCheck && !a.ffmpegAvailable():
-			ui.Text(c, "ffmpeg 缺失，将自动降级").FontSize(9).TextColor(t.Warning)
-		case a.opt.AVSave:
-			ui.Text(c, "保存片段").FontSize(9).TextColor(t.TextMuted)
-		}
-		ui.Spacer(c)
 	})
+	if a.opt.DeepAVCheck && !a.ffmpegAvailable() {
+		ui.Text(c, "ffmpeg 缺失，深度抽检将自动降级").FontSize(9).TextColor(t.Warning)
+	}
+}
+
+func (a *App) settingsButtonLabel() string {
+	return "设置 · " + a.settingsSummary()
+}
+
+func (a *App) settingsSummary() string {
+	o := a.options()
+	return fmt.Sprintf("%d分 · %d并发", o.Lookback, o.Workers)
+}
+
+func (a *App) actions(c *ui.Context, t *ui.Theme) {
 	if a.scanning || a.singleCheck {
 		ui.Progress(c, clampFloat(a.progress, 0, 1)).Label(a.progressLabel)
 	}
@@ -236,11 +219,6 @@ func (a *App) actions(c *ui.Context, t *ui.Theme) {
 			ui.PrimaryButton(c.Key("scan"), "开始巡检").Grow(1).
 				Disabled(len(a.targetDevices()) == 0).
 				OnClick(a.startScan)
-		}
-		if a.report != nil && !a.scanning && !a.singleCheck {
-			ui.Button(c.Key("single"), "单路抽检").Shrink(0).
-				Disabled(a.selectedRow < 0).
-				OnClick(a.runSingleCheck)
 		}
 	})
 	_ = t
