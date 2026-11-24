@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +25,7 @@ import (
 	"nvrstatus/internal/util"
 )
 
-const version = "3.0.3"
+const version = "3.0.4"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -266,6 +267,9 @@ func loadDevices(a *cliArgs) ([]model.Device, error) {
 		return legacy.Devices, nil
 	}
 	st := config.New("")
+	if err := st.LoadErr(); err != nil {
+		return nil, err
+	}
 	name := a.profile
 	if name == "" {
 		name = st.ActiveName()
@@ -315,10 +319,7 @@ func deviceList(devices []model.Device) string {
 }
 
 func defaultSaveRoot() string {
-	if dir, err := os.UserConfigDir(); err == nil {
-		return dir + "/NVRStatus/av_samples"
-	}
-	return "av_samples"
+	return filepath.Join(config.AppDataDir(), "av_samples")
 }
 
 // nowFunc is a variable so tests can freeze time if the CLI is exercised.

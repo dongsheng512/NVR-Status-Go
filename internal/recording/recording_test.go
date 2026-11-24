@@ -315,3 +315,54 @@ func TestSearchTrackRecentResponseStatusIsUnknown(t *testing.T) {
 		t.Fatalf("Status = %q, want %q (detail=%q)", res.Status, model.StatusUnknown, res.Detail)
 	}
 }
+
+type pagedFetcher struct {
+	pages []string
+	idx   int
+}
+
+func (p *pagedFetcher) Get(endpoint string) (string, error) { return "", nil }
+func (p *pagedFetcher) Post(endpoint, body string) (string, error) {
+	if p.idx >= len(p.pages) {
+		return `<CMSearchResult><responseStatusStrg>NO MATCHES</responseStatusStrg></CMSearchResult>`, nil
+	}
+	out := p.pages[p.idx]
+	p.idx++
+	return out, nil
+}
+func (p *pagedFetcher) DeviceLocation() *time.Location   { return time.UTC }
+func (p *pagedFetcher) Cameras() ([]model.Camera, error) { return nil, nil }
+func (p *pagedFetcher) Context() context.Context         { return context.Background() }
+
+func TestSearchTrackRecentPagesForwardOnMORE(t *testing.T) {
+	pf := &pagedFetcher{
+		pages: []string{
+			`<CMSearchResult><responseStatusStrg>MORE</responseStatusStrg><searchMatchItem><timeSpan><startTime>2026-09-11T03:00:00Z</startTime><endTime>2026-09-11T03:10:00Z</endTime></timeSpan></searchMatchItem></CMSearchResult>`,
+			`<CMSearchResult><responseStatusStrg>OK</responseStatusStrg><searchMatchItem><timeSpan><startTime>2026-09-11T03:20:00Z</startTime><endTime>2026-09-11T03:30:00Z</endTime></timeSpan></searchMatchItem></CMSearchResult>`,
+		},
+	}
+	s := &Service{F: pf, LookbackMinutes: 60}
+	matches, err := s.cmsearchCollect("101", time.Date(2026, 9, 11, 2, 30, 0, 0, time.UTC), time.Date(2026, 9, 11, 3, 35, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("cmsearchCollect: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("len(matches) = %d, want 2", len(matches))
+	}
+	if got := matches[1].FindText(".//endTime", ""); got != "2026-09-11T03:30:00Z" {
+		t.Fatalf("second match endTime = %q, want 2026-09-11T03:30:00Z", got)
+	}
+}
+
+func TestJudgeRecordingOKChecksAudioProbeBad(t *testing.T) {
+	yes := true
+	r := model.Record{
+		RecordingEnabled: &yes,
+		DiskStatus:       model.StatusOK,
+		VideoProbe:       model.StatusOK,
+		AudioProbe:       model.StatusBad,
+	}
+	if got := JudgeRecordingOK(&r); got != model.StatusBad {
+		t.Fatalf("JudgeRecordingOK = %q, want %q", got, model.StatusBad)
+	}
+}

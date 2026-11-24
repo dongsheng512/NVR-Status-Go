@@ -153,3 +153,16 @@ func TestStorageCachesEndpointWithinService(t *testing.T) {
 		t.Fatalf("/ContentMgmt/storage fetched %d times, want 1", got)
 	}
 }
+
+func TestStorageStatusNonNumericFreeSpaceIsUnknown(t *testing.T) {
+	xml := `<Storage><hdd><hddName>hdd1</hddName><capacity>10485760</capacity><freeSpace>unknown</freeSpace><status>ok</status></hdd></Storage>`
+	f := &fakeFetcher{get: map[string]string{"/ContentMgmt/storage": xml}}
+	s := &Service{F: f}
+	drives, err := s.StorageStatus()
+	if err != nil || len(drives) != 1 {
+		t.Fatalf("StorageStatus = (%d, %v)", len(drives), err)
+	}
+	if drives[0].Usage != "未知" || drives[0].FreeTB != "未知" || drives[0].UsedTB != "未知" {
+		t.Fatalf("non-numeric freeSpace should stay 未知, got %+v", drives[0])
+	}
+}

@@ -116,17 +116,23 @@ func (s Snapshot) Metrics() string {
 	b.WriteString("# TYPE nvr_disk_usage_percent gauge\n")
 	var unknown strings.Builder
 	for _, r := range s.Reports {
+		seenDrives := make(map[string]int, len(r.Drives))
 		for _, d := range r.Drives {
+			driveName := d.Name
+			seenDrives[driveName]++
+			if seenDrives[driveName] > 1 {
+				driveName = fmt.Sprintf("%s#%d", driveName, seenDrives[driveName])
+			}
 			pct, ok := util.ParsePercent(d.Usage)
 			if !ok {
 				// Never report an unparsable usage as 0%: that reads as "empty
 				// disk". Expose it as an explicit unknown instead.
 				fmt.Fprintf(&unknown, "nvr_disk_usage_unknown{device=%s,ip=%s,drive=%s} 1\n",
-					label(r.DeviceName), label(r.IP), label(d.Name))
+					label(r.DeviceName), label(r.IP), label(driveName))
 				continue
 			}
 			fmt.Fprintf(&b, "nvr_disk_usage_percent{device=%s,ip=%s,drive=%s} %.1f\n",
-				label(r.DeviceName), label(r.IP), label(d.Name), pct)
+				label(r.DeviceName), label(r.IP), label(driveName), pct)
 		}
 	}
 	b.WriteString("# HELP nvr_audio_probe_warnings Audio probe warnings.\n")

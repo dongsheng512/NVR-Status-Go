@@ -23,6 +23,11 @@ func (l *Limiter) Acquire(check func() error) error {
 	if l == nil {
 		return nil
 	}
+	if check != nil {
+		if err := check(); err != nil {
+			return err
+		}
+	}
 	for {
 		select {
 		case l.ch <- struct{}{}:

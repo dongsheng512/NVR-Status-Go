@@ -84,7 +84,7 @@ func (a *App) resultHeader(c *ui.Context, t *ui.Theme) {
 		if len(a.reports) > 1 {
 			names := make([]string, 0, len(a.reports))
 			for _, r := range a.reports {
-				names = append(names, r.DeviceName)
+				names = append(names, reportChoiceLabel(r, a.reports))
 			}
 			ui.Select(c.Key("result-device"), &a.resultDevice, names).Width(180).OnChange(func() {
 				a.selectReport(a.resultDevice)
@@ -108,14 +108,29 @@ func (a *App) resultHeader(c *ui.Context, t *ui.Theme) {
 	})
 }
 
-func (a *App) selectReport(name string) {
+func reportChoiceLabel(r model.Report, all []model.Report) string {
+	dups := 0
+	for _, other := range all {
+		if other.DeviceName == r.DeviceName {
+			dups++
+		}
+	}
+	if dups > 1 && r.IP != "" {
+		return fmt.Sprintf("%s (%s)", r.DeviceName, r.IP)
+	}
+	return r.DeviceName
+}
+
+func (a *App) selectReport(label string) {
 	for i := range a.reports {
-		if a.reports[i].DeviceName == name {
+		if reportChoiceLabel(a.reports[i], a.reports) == label || a.reports[i].DeviceName == label {
 			a.report = &a.reports[i]
-			a.resultDevice = name
+			a.resultDevice = reportChoiceLabel(a.reports[i], a.reports)
 			a.diff = a.diffs[a.report.IP]
 			a.selectedRow = -1
-			*a.table.Selected = -1
+			if a.table.Selected != nil {
+				*a.table.Selected = -1
+			}
 			return
 		}
 	}
@@ -529,11 +544,13 @@ func usageTone(usage string) string {
 }
 
 func driveLabel(s string) string {
-	switch s {
-	case "ok":
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "ok", "normal":
 		return "正常"
 	case "sleep", "idle":
 		return "休眠"
+	case "", "unknown", "未知":
+		return "未知"
 	default:
 		return "异常"
 	}

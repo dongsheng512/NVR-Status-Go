@@ -28,6 +28,7 @@ func SignalContext() (ctx context.Context, exitCode func() int, stop func()) {
 		defer close(done)
 		select {
 		case sig := <-ch:
+			signal.Stop(ch)
 			if s, ok := sig.(syscall.Signal); ok {
 				received.Store(int32(s))
 			}

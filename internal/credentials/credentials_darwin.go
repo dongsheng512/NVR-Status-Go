@@ -3,7 +3,10 @@
 package credentials
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -19,21 +22,27 @@ var securityCLIPath = "/usr/bin/security"
 var securityTimeout = 15 * time.Second
 
 // runSecurity is the injectable command runner used by tests. It returns the
-// command's stdout, its exit code, and an execution error (nil when the
-// command ran but exited non-zero).
-var runSecurity = func(args []string) (string, int, error) {
+// command's combined stdout/stderr, its exit code, and an execution error (nil
+// when the command ran but exited non-zero).
+var runSecurity = func(args []string, stdin string) (string, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), securityTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, securityCLIPath, args...)
-	out, err := cmd.Output()
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
 	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok {
-			return string(out), exit.ExitCode(), nil
+			return out.String(), exit.ExitCode(), nil
 		}
 		return "", -1, err
 	}
-	return string(out), 0, nil
+	return out.String(), 0, nil
 }
 
 func platformAvailable() bool {
@@ -42,27 +51,33 @@ func platformAvailable() bool {
 }
 
 func platformSetPassword(account, password string) bool {
-	_, code, err := runSecurity([]string{
-		"add-generic-password",
-		"-U",
-		"-s", Service,
-		"-a", account,
-		"-w", password,
-	})
+	// Pass the secret over stdin via `security -i` with hex `-X` so the
+	// plaintext password never appears in process argv (`ps aux`) and arbitrary
+	// UTF-8 / quote characters are stored verbatim.
+	line := fmt.Sprintf("add-generic-password -U -s %s -a %s -X %s\n",
+		quoteSecurityArg(Service),
+		quoteSecurityArg(account),
+		hex.EncodeToString([]byte(password)),
+	)
+	_, code, err := runSecurity([]string{"-i"}, line)
 	return err == nil && code == 0
 }
 
 func platformGetPassword(account string) string {
+	// Use `-g` rather than `-w`: `security -w` emits unprefixed hex for any
+	// non-ASCII password (e.g. Chinese characters), making it impossible to
+	// distinguish from an ASCII hex password. `-g` explicitly prefixes hex
+	// values with `password: 0x...` and quotes ASCII values as `password: "..."`.
 	out, code, err := runSecurity([]string{
 		"find-generic-password",
 		"-s", Service,
 		"-a", account,
-		"-w",
-	})
+		"-g",
+	}, "")
 	if err != nil || code != 0 {
 		return ""
 	}
-	return strings.TrimRight(out, "\r\n\x00")
+	return parseSecurityGPassword(out)
 }
 
 func platformDeletePassword(account string) {
@@ -72,5 +87,37 @@ func platformDeletePassword(account string) {
 		"delete-generic-password",
 		"-s", Service,
 		"-a", account,
-	})
+	}, "")
+}
+
+func quoteSecurityArg(s string) string {
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s)
+	return `"` + escaped + `"`
+}
+
+// parseSecurityGPassword extracts the secret from `security find-generic-password -g`
+// output, handling both `password: "..."` (printable ASCII) and
+// `password: 0x<HEX>  "..."` (UTF-8 / non-ASCII / control bytes).
+func parseSecurityGPassword(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if !strings.HasPrefix(line, "password:") {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(line, "password:"))
+		if strings.HasPrefix(val, "0x") || strings.HasPrefix(val, "0X") {
+			hexPart := val[2:]
+			if sp := strings.IndexAny(hexPart, " \t"); sp >= 0 {
+				hexPart = hexPart[:sp]
+			}
+			if decoded, err := hex.DecodeString(hexPart); err == nil {
+				return string(decoded)
+			}
+		}
+		if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+			return val[1 : len(val)-1]
+		}
+		return strings.TrimRight(val, "\x00")
+	}
+	return ""
 }

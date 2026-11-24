@@ -123,3 +123,15 @@ func TestUsageBarAndParseFloatRejectNaNInf(t *testing.T) {
 		}
 	}
 }
+
+func TestIsProblemExcludesSkipped(t *testing.T) {
+	r := model.Record{
+		Channel:     "1",
+		Online:      "true",
+		DiskStatus:  model.StatusSkip,
+		RecordingOK: model.StatusSkip,
+	}
+	if isProblem(r, false) {
+		t.Fatal("skipped channel (--no-search) should not be flagged as a problem")
+	}
+}

@@ -260,8 +260,8 @@ func Summarize(cameras []model.Camera, records []model.Record, drives []model.Dr
 		raise(statusSevere)
 		names := make([]string, 0, len(offline))
 		for _, c := range offline {
-			if c.Name != "未知" {
-				names = append(names, c.Name)
+			if name := strings.TrimSpace(c.Name); name != "" && name != "未知" {
+				names = append(names, name)
 			}
 		}
 		// 原因细分：优先用通道检测状态解释离线原因（未接入 / 网络不可达 …）
@@ -413,20 +413,22 @@ func Summarize(cameras []model.Camera, records []model.Record, drives []model.Dr
 				}
 				samples := make([]string, 0, limit)
 				for _, r := range bad[:limit] {
-					label := r.Channel
-					if r.Name != "" && r.Name != "未知" {
-						label += "(" + r.Name + ")"
+					label := strings.TrimSpace(r.Channel)
+					if name := strings.TrimSpace(r.Name); name != "" && name != "未知" {
+						label += "(" + name + ")"
 					}
-					samples = append(samples, label)
+					if label != "" {
+						samples = append(samples, label)
+					}
 				}
 				sample := strings.Join(samples, "、")
-				if len(bad) <= 5 && sample != "" {
-					warn("%d个通道近期无录像: %s", stats.DiskBad, sample)
+				more := ""
+				if len(bad) > 5 {
+					more = fmt.Sprintf(" 等%d路", len(bad))
+				}
+				if sample != "" {
+					warn("%d个通道近期无录像: %s%s", stats.DiskBad, sample, more)
 				} else {
-					more := ""
-					if len(bad) > 5 {
-						more = fmt.Sprintf(" 等%d路", len(bad))
-					}
 					warn("%d个通道近期无录像%s", stats.DiskBad, more)
 				}
 			}

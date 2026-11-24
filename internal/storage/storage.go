@@ -4,6 +4,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -83,8 +84,14 @@ var overwriteStrategyTags = []string{
 // StorageStatus returns the physical drives.
 func (s *Service) StorageStatus() ([]model.Drive, error) {
 	text, err := s.getQuiet("/ContentMgmt/storage")
+	if errors.Is(err, util.ErrCancelled) {
+		return nil, err
+	}
 	if err != nil || strings.TrimSpace(text) == "" {
 		text, err = s.getQuiet("/ContentMgmt/Storage/hdd")
+		if errors.Is(err, util.ErrCancelled) {
+			return nil, err
+		}
 	}
 	if err != nil || strings.TrimSpace(text) == "" {
 		return []model.Drive{}, nil
@@ -96,17 +103,15 @@ func (s *Service) StorageStatus() ([]model.Drive, error) {
 	var drives []model.Drive
 	for _, hdd := range root.FindAll(".//hdd") {
 		capacity := util.ToInt(hdd.FindText("capacity", ""), 0)
-		freeRaw := hdd.FindText("freeSpace", "")
-		free := util.ToInt(freeRaw, 0)
-		used := 0
+		freeRaw := strings.TrimSpace(hdd.FindText("freeSpace", ""))
 		usage := "未知"
 		capacityTB := "未知"
 		freeTB := "未知"
 		usedTB := "未知"
 		if capacity > 0 {
 			capacityTB = fmt.Sprintf("%.1f", float64(capacity)/1024/1024)
-			if strings.TrimSpace(freeRaw) != "" {
-				used = capacity - free
+			if free, err := strconv.Atoi(freeRaw); err == nil && free >= 0 && free <= capacity {
+				used := capacity - free
 				pct := float64(used) / float64(capacity) * 100
 				usage = fmt.Sprintf("%.1f%%", pct)
 				freeTB = fmt.Sprintf("%.1f", float64(free)/1024/1024)
@@ -257,7 +262,8 @@ func parseStrategy(val string) (bool, bool) {
 		return false, false
 	}
 	if strings.Contains(val, "覆盖") || strings.Contains(val, "循环") {
-		if strings.Contains(val, "不") || strings.Contains(val, "禁止") || strings.Contains(val, "停止") {
+		if strings.Contains(val, "不") || strings.Contains(val, "禁止") || strings.Contains(val, "停止") ||
+			strings.Contains(val, "未") || strings.Contains(val, "关") || strings.Contains(val, "无") {
 			return false, true
 		}
 		return true, true

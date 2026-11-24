@@ -102,10 +102,15 @@ func LatestForDeviceExcept(ip, skipPath string) (*model.Report, error) {
 }
 
 func samePath(a, b string) bool {
-	if a == b {
+	if a == b || filepath.Clean(a) == filepath.Clean(b) {
 		return true
 	}
-	return filepath.Clean(a) == filepath.Clean(b)
+	if sa, err := os.Stat(a); err == nil {
+		if sb, err := os.Stat(b); err == nil {
+			return os.SameFile(sa, sb)
+		}
+	}
+	return false
 }
 
 // Compare diffs two reports. Issue detection mirrors the CLI's

@@ -80,6 +80,7 @@ func HandlerWith(m *Monitor, opt Options) http.Handler {
 
 // guard wraps next with a bearer-token check. An empty token disables auth.
 func guard(token string, next http.HandlerFunc) http.HandlerFunc {
+	token = strings.TrimSpace(token)
 	if token == "" {
 		return next
 	}

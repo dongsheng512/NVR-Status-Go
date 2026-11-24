@@ -480,7 +480,7 @@ func pickMatches(matches []*xmlnode.Node, now time.Time, loc *time.Location, gra
 	return covers, latest, bestURI, bestS, bestE
 }
 
-func (s *Service) cmsearchPage(trackID string, start, end time.Time, maxResults, position int) (int, []*xmlnode.Node, int, error) {
+func (s *Service) cmsearchPage(trackID string, start, end time.Time, maxResults, position int) (int, []*xmlnode.Node, int, bool, error) {
 	startS := start.UTC().Format("2006-01-02T15:04:05Z")
 	endS := end.UTC().Format("2006-01-02T15:04:05Z")
 	searchID := newUUID()
@@ -502,28 +502,29 @@ func (s *Service) cmsearchPage(trackID string, start, end time.Time, maxResults,
 
 	text, err := s.F.Post("/ContentMgmt/search", body)
 	if err != nil {
-		return 0, nil, 0, err
+		return 0, nil, 0, false, err
 	}
 	if strings.TrimSpace(text) == "" {
-		return 0, nil, 0, errors.New("CMSearch 返回空响应")
+		return 0, nil, 0, false, errors.New("CMSearch 返回空响应")
 	}
 	root, err := xmlnode.Parse(text)
 	if err != nil {
-		return 0, nil, 0, err
+		return 0, nil, 0, false, err
 	}
 	if root.Name == "ResponseStatus" {
 		msg := root.FindText(".//statusString", "")
 		if msg == "" {
 			msg = root.FindText(".//subStatusCode", "ResponseStatus")
 		}
-		return 0, nil, 0, fmt.Errorf("CMSearch 设备返回错误: %s", msg)
+		return 0, nil, 0, false, fmt.Errorf("CMSearch 设备返回错误: %s", msg)
 	}
 	matches := root.FindAll(".//searchMatchItem")
 	totalRaw := root.FindText(".//totalMatches", "")
 	if totalRaw == "" {
 		totalRaw = root.FindText("totalMatches", "")
 	}
-	if totalRaw == "" {
+	hasTotal := strings.TrimSpace(totalRaw) != ""
+	if !hasTotal {
 		totalRaw = root.FindText(".//numOfMatches", "")
 	}
 	total := len(matches)
@@ -533,34 +534,70 @@ func (s *Service) cmsearchPage(trackID string, start, end time.Time, maxResults,
 	if total < len(matches) {
 		total = len(matches)
 	}
-	return 200, matches, total, nil
+	statusStrg := strings.TrimSpace(root.FindText(".//responseStatusStrg", ""))
+	hasMore := strings.EqualFold(statusStrg, "MORE") || (!hasTotal && len(matches) >= maxResults && maxResults > 0)
+	return 200, matches, total, hasMore, nil
 }
 
 func (s *Service) cmsearchCollect(trackID string, start, end time.Time) ([]*xmlnode.Node, error) {
-	_, matches, total, err := s.cmsearchPage(trackID, start, end, cmsearchPage, 0)
+	_, matches, total, hasMore, err := s.cmsearchPage(trackID, start, end, cmsearchPage, 0)
 	if err != nil {
 		return nil, err
 	}
-	if total <= len(matches) || total <= cmsearchPage {
-		return matches, nil
-	}
-	lastPos := total - cmsearchPage
-	if lastPos < 0 {
-		lastPos = 0
-	}
-	_, more, _, err := s.cmsearchPage(trackID, start, end, cmsearchPage, lastPos)
-	if err != nil || len(more) == 0 {
+	if total <= len(matches) && !hasMore {
 		return matches, nil
 	}
 	seen := map[string]bool{}
 	var merged []*xmlnode.Node
-	for _, item := range append(append([]*xmlnode.Node{}, matches...), more...) {
-		k := itemKey(item)
-		if seen[k] {
-			continue
+	addItems := func(items []*xmlnode.Node) int {
+		added := 0
+		for _, item := range items {
+			k := itemKey(item)
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			merged = append(merged, item)
+			added++
 		}
-		seen[k] = true
-		merged = append(merged, item)
+		return added
+	}
+	addItems(matches)
+
+	if total > cmsearchPage && total > len(matches) {
+		lastPos := total - cmsearchPage
+		if lastPos < 0 {
+			lastPos = 0
+		}
+		_, more, _, _, err := s.cmsearchPage(trackID, start, end, cmsearchPage, lastPos)
+		if errors.Is(err, util.ErrCancelled) {
+			return nil, err
+		}
+		if err == nil && len(more) > 0 {
+			addItems(more)
+		}
+		return merged, nil
+	}
+
+	// Firmware returned MORE without totalMatches: walk forward with a page cap.
+	const maxExtraPages = 20
+	pos := len(matches)
+	for page := 0; page < maxExtraPages && hasMore; page++ {
+		if err := s.CheckCancel(); err != nil {
+			return nil, err
+		}
+		_, more, _, nextMore, err := s.cmsearchPage(trackID, start, end, cmsearchPage, pos)
+		if errors.Is(err, util.ErrCancelled) {
+			return nil, err
+		}
+		if err != nil || len(more) == 0 {
+			break
+		}
+		if addItems(more) == 0 {
+			break
+		}
+		pos += len(more)
+		hasMore = nextMore
 	}
 	return merged, nil
 }
@@ -751,6 +788,11 @@ func (s *Service) SearchTrackInRange(trackID string, start, end time.Time) Searc
 	return SearchResult{OK: true, Detail: "ok", PlaybackURI: bestURI, SegStart: bestS, SegEnd: bestE}
 }
 
+// JudgeRecordingOK combines plan + disk + deep probe into the row verdict.
+func JudgeRecordingOK(r *model.Record) string {
+	return judgeRecordingOK(r)
+}
+
 // judgeRecordingOK combines plan + disk + deep probe into the row verdict.
 func judgeRecordingOK(r *model.Record) string {
 	if r.RecordingEnabled == nil || !*r.RecordingEnabled {
@@ -766,14 +808,8 @@ func judgeRecordingOK(r *model.Record) string {
 	if disk != model.StatusOK {
 		return model.StatusUnknown
 	}
-	if r.VideoProbe == model.StatusBad {
+	if r.VideoProbe == model.StatusBad || r.AudioProbe == model.StatusBad {
 		return model.StatusBad
-	}
-	if r.VideoProbe == model.StatusUnknown && r.ProbeDetail != "" {
-		if disk == model.StatusOK {
-			return model.StatusOK
-		}
-		return model.StatusUnknown
 	}
 	return model.StatusOK
 }

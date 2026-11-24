@@ -647,6 +647,10 @@ func (a *App) historyModal(c *ui.Context, t *ui.Theme) {
 				ui.Spacer(c)
 				ui.Button(c.Key("history-refresh"), "刷新").FontSize(11).OnClick(func() {
 					a.historyList = nil
+					a.historySel = -1
+					if a.historyListState.Selected != nil {
+						*a.historyListState.Selected = -1
+					}
 					if list, err := history.ListReports(); err == nil {
 						a.historyList = list
 					}
@@ -712,8 +716,13 @@ func (a *App) loadHistory(i int) {
 	}
 	a.report = rep
 	a.reports = []model.Report{*rep}
+	a.resultDevice = rep.DeviceName
 	a.diff = nil
+	a.diffs = map[string]*history.Diff{}
 	a.selectedRow = -1
+	if a.table.Selected != nil {
+		*a.table.Selected = -1
+	}
 	a.historyOpen = false
 	a.logf("已加载历史报告："+rep.DeviceName, "ok")
 }

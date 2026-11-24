@@ -86,7 +86,8 @@ func (c *Client) Alarms() ([]model.Alarm, error) {
 	alarms := make([]model.Alarm, 0)
 	for _, hdd := range root.FindAll(".//hdd") {
 		status := hdd.FindText("status", "unknown")
-		if status == "ok" {
+		switch strings.ToLower(strings.TrimSpace(status)) {
+		case "ok", "normal", "sleep", "idle", "unknown", "未知", "":
 			continue
 		}
 		alarms = append(alarms, model.Alarm{
@@ -143,11 +144,14 @@ func copyCameras(cameras []model.Camera) []model.Camera {
 func (c *Client) inputProxyCameras() ([]model.Camera, bool, error) {
 	infoRoot, err := c.Parse("/ContentMgmt/InputProxy/channels", "摄像头列表")
 	if err != nil {
-		if errors.Is(err, util.ErrCancelled) {
+		if errors.Is(err, util.ErrCancelled) || isTransient(err) {
 			return nil, false, err
 		}
-		// Any other failure means "unsupported" for parity with Python, which
-		// treats a nil root as a signal to try Streaming/channels.
+		var st *StatusError
+		if errors.As(err, &st) && st.StatusCode >= 500 {
+			return nil, false, err
+		}
+		// 400/404/403 means InputProxy is unsupported: fall back to Streaming/channels.
 		infoRoot = nil
 	}
 	if infoRoot == nil || infoRoot.Tag == "ResponseStatus" {
@@ -156,7 +160,11 @@ func (c *Client) inputProxyCameras() ([]model.Camera, bool, error) {
 
 	statusRoot, err := c.Parse("/ContentMgmt/InputProxy/channels/status", "摄像头状态")
 	if err != nil {
-		if errors.Is(err, util.ErrCancelled) {
+		if errors.Is(err, util.ErrCancelled) || isTransient(err) {
+			return nil, false, err
+		}
+		var st *StatusError
+		if errors.As(err, &st) && st.StatusCode >= 500 {
 			return nil, false, err
 		}
 		// Keep the camera list even if status is unavailable; online stays

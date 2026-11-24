@@ -520,7 +520,7 @@ func isProblem(r model.Record, deep bool) bool {
 	if ok == "" {
 		ok = model.StatusUnknown
 	}
-	if ok != model.StatusOK {
+	if ok != model.StatusOK && ok != model.StatusSkip {
 		return true
 	}
 	if r.Online == "false" {

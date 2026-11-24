@@ -1273,3 +1273,30 @@ func TestTailBufferCapsOutputAndKeepsTail(t *testing.T) {
 		t.Fatalf("tail lost: %q", got)
 	}
 }
+
+func TestRetryImprovesRejectsInconclusiveOverwrite(t *testing.T) {
+	if retryImproves(model.StatusBad, model.StatusOK, model.StatusUnknown, model.StatusUnknown) {
+		t.Fatal("StatusUnknown retry must not overwrite confirmed StatusBad")
+	}
+	if retryImproves(model.StatusBad, model.StatusOK, model.StatusSkip, model.StatusSkip) {
+		t.Fatal("StatusSkip retry must not overwrite confirmed StatusBad")
+	}
+	if !retryImproves(model.StatusBad, model.StatusOK, model.StatusOK, model.StatusOK) {
+		t.Fatal("StatusOK retry should improve StatusBad")
+	}
+	if !retryImproves(model.StatusOK, model.StatusBad, model.StatusOK, model.StatusWarn) {
+		t.Fatal("StatusWarn retry should improve StatusBad")
+	}
+}
+
+func TestRewriteRTSPTimesPreservesLeadingQueryMark(t *testing.T) {
+	raw := "rtsp://192.0.2.10:554/Streaming/tracks/101?size=12345&starttime=20260910T060000Z&endtime=20260910T063000Z"
+	svc := &Service{}
+	got := svc.rewriteRTSPTimes(raw, testClipStart, testClipStart.Add(6*time.Second), "utc")
+	if !strings.Contains(got, "/tracks/101?starttime=") {
+		t.Fatalf("leading ? lost when stripping size=: %s", got)
+	}
+	if strings.Contains(got, "size=") {
+		t.Fatalf("size= should be stripped: %s", got)
+	}
+}

@@ -222,3 +222,21 @@ func TestHTTPMethodNotAllowed(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsDeduplicatesDuplicateDriveNames(t *testing.T) {
+	m := New()
+	m.Update([]model.Report{{
+		DeviceName: "NVR-A", IP: "192.0.2.10",
+		Drives: []model.Drive{
+			{Name: "未知", Usage: "50.0%"},
+			{Name: "未知", Usage: "75.0%"},
+		},
+	}}, time.Second)
+	out := m.Snapshot().Metrics()
+	if !strings.Contains(out, `drive="未知"} 50.0`) {
+		t.Fatalf("first drive missing:\n%s", out)
+	}
+	if !strings.Contains(out, `drive="未知#2"} 75.0`) {
+		t.Fatalf("second duplicate drive should be deduplicated as 未知#2:\n%s", out)
+	}
+}

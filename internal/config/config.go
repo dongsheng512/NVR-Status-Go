@@ -25,9 +25,18 @@ const appName = "NVRStatus"
 // Store owns one profiles.json file plus its in-memory representation.
 // All exported methods are safe for concurrent use.
 type Store struct {
-	mu   sync.RWMutex
-	Path string
-	Data model.Store
+	mu          sync.RWMutex
+	Path        string
+	Data        model.Store
+	lastLoadErr error
+}
+
+// LoadErr returns the error from the most recent Load call (including the one
+// performed by New), or nil if loading succeeded.
+func (s *Store) LoadErr() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastLoadErr
 }
 
 // Credential hooks are package variables so tests (and future alternate
@@ -93,6 +102,7 @@ func New(path string) *Store {
 func (s *Store) Load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastLoadErr = nil
 	if s.Path == "" {
 		s.Path = DefaultPath()
 	}
@@ -101,13 +111,15 @@ func (s *Store) Load() error {
 		if errors.Is(err, os.ErrNotExist) {
 			s.Data = defaultStore()
 			s.tryMigrateLegacy()
-			return s.saveLocked()
+			s.lastLoadErr = s.saveLocked()
+			return s.lastLoadErr
 		}
 		// A transient read error (locked file, permissions) must not destroy
 		// the on-disk file. Keep defaults for this session and report it.
 		s.Data = defaultStore()
 		s.tryMigrateLegacy()
-		return fmt.Errorf("读取配置失败: %w", err)
+		s.lastLoadErr = fmt.Errorf("读取配置失败: %w", err)
+		return s.lastLoadErr
 	}
 
 	parsed, empty, err := parseStore(raw)
@@ -115,13 +127,15 @@ func (s *Store) Load() error {
 		s.backupCorrupt()
 		s.Data = defaultStore()
 		s.tryMigrateLegacy()
-		return s.saveLocked()
+		s.lastLoadErr = s.saveLocked()
+		return s.lastLoadErr
 	}
 	s.Data = parsed
 	if empty {
 		// A syntactically valid file with an empty profiles map is reset to
 		// defaults and persisted (matching the Python loader).
-		return s.saveLocked()
+		s.lastLoadErr = s.saveLocked()
+		return s.lastLoadErr
 	}
 	return nil
 }
@@ -444,6 +458,7 @@ func (s *Store) ImportProfile(path, name string) (string, error) {
 	if value, ok := root["name"]; ok {
 		_ = json.Unmarshal(value, &importedName)
 	}
+	explicitName := strings.TrimSpace(name) != ""
 	if name == "" {
 		name = importedName
 		if name == "" {
@@ -471,9 +486,20 @@ func (s *Store) ImportProfile(path, name string) (string, error) {
 			return "", fmt.Errorf("导入扫描选项无效: %w", err)
 		}
 	}
-	prof.Name = profileName
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !explicitName {
+		base := profileName
+		for i := 1; ; i++ {
+			if _, exists := s.Data.Profiles[profileName]; !exists {
+				break
+			}
+			profileName = fmt.Sprintf("%s_%d", base, i)
+		}
+	} else if old, exists := s.Data.Profiles[profileName]; exists && old != nil {
+		purgeStaleDevices(profileName, old.Devices, prof.Devices)
+	}
+	prof.Name = profileName
 	prof.Devices = migratePasswords(profileName, prof.Devices)
 	s.Data.Profiles[profileName] = prof
 	s.Data.ActiveProfile = profileName
@@ -593,7 +619,7 @@ func (s *Store) backupCorrupt() {
 	stamp := time.Now().Format("20060102-150405")
 	dst := fmt.Sprintf("%s.bak-%s", s.Path, stamp)
 	for n := 1; ; n++ {
-		if _, err := os.Stat(dst); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(dst); err != nil {
 			break
 		}
 		dst = fmt.Sprintf("%s.bak-%s-%d", s.Path, stamp, n)

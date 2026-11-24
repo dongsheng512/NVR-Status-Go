@@ -301,3 +301,22 @@ func TestSafeCellBlocksLeadingWhitespaceFormula(t *testing.T) {
 		}
 	}
 }
+
+func TestExportTXTSynthesizesDefaultSummary(t *testing.T) {
+	rep := sampleReport()
+	rep.Health.Warnings = []string{"通道 2 离线"}
+	path := filepath.Join(t.TempDir(), "report.txt")
+	if err := ExportTXT(path, rep, ""); err != nil {
+		t.Fatalf("ExportTXT: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{"NVR 巡检报告 · NVR-1 (10.0.0.1)", "DS-7616", "健康状态: 良好", "通道 2 离线", "C", "【通道明细】"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("synthesized TXT missing %q:\n%s", want, text)
+		}
+	}
+}

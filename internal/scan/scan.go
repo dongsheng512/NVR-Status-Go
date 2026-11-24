@@ -480,12 +480,18 @@ func (r *Runner) RunSingleAVWith(records []model.Record, device model.Device, op
 	opt.AVChannels = channels
 	n := r.Build(device, opt)
 	defer n.Client.Close()
+	if n.AV.FFmpeg == "" || n.AV.FFprobe == "" {
+		return nil, errors.New("未找到 ffmpeg/ffprobe，无法执行单路抽检")
+	}
 	n.AV.Progress = progress
 	if onNVR != nil {
 		onNVR(n)
 	}
 	if err := n.AV.Run(work); err != nil {
 		return nil, err
+	}
+	for i := range work {
+		work[i].RecordingOK = recording.JudgeRecordingOK(&work[i])
 	}
 	return work, nil
 }

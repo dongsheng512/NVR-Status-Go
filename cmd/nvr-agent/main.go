@@ -129,7 +129,10 @@ func run(argv []string) int {
 
 	if a.once {
 		agent.scanOnce(ctx)
-		return signalExit()
+		if code := signalExit(); code != 0 {
+			return code
+		}
+		return onceExitCode(mon.Snapshot().Reports)
 	}
 
 	token, err := resolveToken(os.Stdout, a.listen, a.token)
@@ -298,9 +301,27 @@ func isLoopbackAddr(addr string) (bool, error) {
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return false, fmt.Errorf("无法解析主机 %q", host)
+		// Non-IP hostnames (e.g. monitor.internal) are treated as non-loopback
+		// so resolveToken enforces bearer-token protection rather than rejecting.
+		return false, nil
 	}
 	return ip.IsLoopback(), nil
+}
+
+func onceExitCode(reports []model.Report) int {
+	hasSevere := false
+	for _, r := range reports {
+		if r.Error != "" {
+			return 1
+		}
+		if r.Health.Status == "严重" {
+			hasSevere = true
+		}
+	}
+	if hasSevere {
+		return 2
+	}
+	return 0
 }
 
 func loadConfig(configPath, profile string) ([]model.Device, string, model.ScanOptions, error) {
@@ -318,6 +339,9 @@ func loadConfig(configPath, profile string) ([]model.Device, string, model.ScanO
 		return legacy.Devices, filepath.Base(configPath), model.DefaultScanOptions(), nil
 	}
 	st := config.New("")
+	if err := st.LoadErr(); err != nil {
+		return nil, "", model.DefaultScanOptions(), err
+	}
 	name := profile
 	if name == "" {
 		name = st.ActiveName()

@@ -478,3 +478,58 @@ func TestFinishScanArchivesEverySuccessfulDevice(t *testing.T) {
 		t.Fatalf("failed device NVR-2 should not be archived: %#v", ips)
 	}
 }
+
+// TestScanCompletesWithAsyncPost verifies that when post dispatches
+// asynchronously (like mygo.Window.Update), the scan goroutine's defer cancel()
+// does not cause a finished scan to be misclassified as cancelled.
+func TestScanCompletesWithAsyncPost(t *testing.T) {
+	srv := fakeNVR(t)
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+
+	app := newTestApp(t)
+	queue := make(chan func(), 64)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case fn := <-queue:
+				// Yield slightly so the scan goroutine exits and runs defer cancel() first.
+				time.Sleep(15 * time.Millisecond)
+				app.stateMu.Lock()
+				fn()
+				app.stateMu.Unlock()
+			case <-stop:
+				return
+			}
+		}
+	}()
+	app.postFn = func(fn func()) { queue <- fn }
+
+	app.devices = []model.Device{{Name: "NVR-Async", IP: u.Hostname(), Port: port, Username: "admin", Password: "pw"}}
+	app.target = "NVR-Async"
+	app.opt = model.DefaultScanOptions()
+	app.syncFormFromOptions()
+
+	app.startScan()
+	done := app.ScanDone()
+	if done == nil {
+		t.Fatal("scan did not start")
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("scan timed out")
+	}
+
+	app.stateMu.Lock()
+	defer app.stateMu.Unlock()
+	if app.progressLabel == "巡检已取消" {
+		t.Fatalf("finished scan misclassified as cancelled; logs=%v", app.logs)
+	}
+	if app.report == nil || app.report.Error != "" {
+		t.Fatalf("expected valid report, got %+v; logs=%v", app.report, app.logs)
+	}
+}

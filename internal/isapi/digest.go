@@ -3,6 +3,7 @@ package isapi
 import (
 	"crypto/md5"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -20,28 +21,57 @@ type digestChallenge struct {
 	Stale     bool
 }
 
-// findDigestChallenge returns the first Digest challenge carried by resp.
+// findDigestChallenge returns the best supported Digest challenge carried by
+// resp (falling back to the first parsed Digest challenge so unsupported
+// algorithm errors are still reported accurately).
 func findDigestChallenge(resp *http.Response) (*digestChallenge, bool) {
 	if resp == nil {
 		return nil, false
 	}
+	var fallback *digestChallenge
 	for _, header := range resp.Header.Values("WWW-Authenticate") {
 		if challenge, ok := parseDigestChallenge(header); ok {
-			return challenge, true
+			if digestAlgorithmSupported(challenge.Algorithm) {
+				return challenge, true
+			}
+			if fallback == nil {
+				fallback = challenge
+			}
 		}
+	}
+	if fallback != nil {
+		return fallback, true
 	}
 	return nil, false
 }
 
+func digestAlgorithmSupported(alg string) bool {
+	switch strings.ToUpper(strings.TrimSpace(alg)) {
+	case "", "MD5", "MD5-SESS", "SHA-256", "SHA-256-SESS":
+		return true
+	default:
+		return false
+	}
+}
+
 // parseDigestChallenge parses a single WWW-Authenticate header value. It
-// tolerates Basic challenges and unknown auth-param extensions.
+// tolerates Basic challenges, comma-combined headers, and unknown extensions.
 func parseDigestChallenge(header string) (*digestChallenge, bool) {
 	text := strings.TrimSpace(header)
-	if len(text) < len("Digest") || !strings.EqualFold(text[:len("Digest")], "Digest") {
-		return nil, false
+	rest := ""
+	if len(text) >= len("Digest") && strings.EqualFold(text[:len("Digest")], "Digest") {
+		r := text[len("Digest"):]
+		if r == "" || r[0] == ' ' || r[0] == '\t' {
+			rest = r
+		}
+	} else {
+		// Handle combined headers such as `Basic realm="x", Digest realm="y", nonce="..."`.
+		lower := strings.ToLower(text)
+		if idx := strings.Index(lower, "digest "); idx >= 0 {
+			rest = text[idx+len("digest"):]
+		}
 	}
-	rest := text[len("Digest"):]
-	if rest != "" && rest[0] != ' ' && rest[0] != '\t' {
+	if rest == "" {
 		return nil, false
 	}
 	params := parseAuthParams(rest)
@@ -128,7 +158,13 @@ func (ch *digestChallenge) authorizationWithNC(method, uri, username, password s
 	if algorithm == "" {
 		algorithm = "MD5"
 	}
-	if algorithm != "MD5" && algorithm != "MD5-SESS" {
+	var hashFn func(string) string
+	switch algorithm {
+	case "MD5", "MD5-SESS":
+		hashFn = md5Hex
+	case "SHA-256", "SHA-256-SESS":
+		hashFn = sha256Hex
+	default:
 		return "", fmt.Errorf("unsupported digest algorithm %q", ch.Algorithm)
 	}
 	qop, err := selectQop(ch.Qop)
@@ -142,11 +178,11 @@ func (ch *digestChallenge) authorizationWithNC(method, uri, username, password s
 	}
 	cnonce := hex.EncodeToString(cnonceBytes)
 
-	ha1 := md5Hex(username + ":" + ch.Realm + ":" + password)
-	if algorithm == "MD5-SESS" {
-		ha1 = md5Hex(ha1 + ":" + ch.Nonce + ":" + cnonce)
+	ha1 := hashFn(username + ":" + ch.Realm + ":" + password)
+	if strings.HasSuffix(algorithm, "-SESS") {
+		ha1 = hashFn(ha1 + ":" + ch.Nonce + ":" + cnonce)
 	}
-	ha2 := md5Hex(method + ":" + uri)
+	ha2 := hashFn(method + ":" + uri)
 
 	if ncVal == 0 {
 		ncVal = 1
@@ -154,9 +190,9 @@ func (ch *digestChallenge) authorizationWithNC(method, uri, username, password s
 	nc := fmt.Sprintf("%08x", ncVal)
 	var response string
 	if qop != "" {
-		response = md5Hex(ha1 + ":" + ch.Nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + ha2)
+		response = hashFn(ha1 + ":" + ch.Nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + ha2)
 	} else {
-		response = md5Hex(ha1 + ":" + ch.Nonce + ":" + ha2)
+		response = hashFn(ha1 + ":" + ch.Nonce + ":" + ha2)
 	}
 
 	parts := []string{
@@ -197,6 +233,11 @@ func selectQop(raw string) (string, error) {
 
 func md5Hex(text string) string {
 	sum := md5.Sum([]byte(text))
+	return hex.EncodeToString(sum[:])
+}
+
+func sha256Hex(text string) string {
+	sum := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(sum[:])
 }
 

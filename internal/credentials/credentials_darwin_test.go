@@ -36,12 +36,15 @@ func TestSecurityCLICommandInjection(t *testing.T) {
 	oldRunner := runSecurity
 	t.Cleanup(func() { runSecurity = oldRunner })
 
-	var calls [][]string
-	runSecurity = func(args []string) (string, int, error) {
-		copied := append([]string(nil), args...)
-		calls = append(calls, copied)
+	type call struct {
+		args  []string
+		stdin string
+	}
+	var calls []call
+	runSecurity = func(args []string, stdin string) (string, int, error) {
+		calls = append(calls, call{args: append([]string(nil), args...), stdin: stdin})
 		if len(args) > 0 && args[0] == "find-generic-password" {
-			return "keychain-pw\n", 0, nil
+			return "keychain: \"login\"\npassword: \"keychain-pw\"\n", 0, nil
 		}
 		return "", 0, nil
 	}
@@ -59,19 +62,31 @@ func TestSecurityCLICommandInjection(t *testing.T) {
 		t.Fatalf("got %d security invocations, want 3: %#v", len(calls), calls)
 	}
 	add := calls[0]
-	if add[0] != "add-generic-password" {
-		t.Fatalf("first command = %q, want add-generic-password", add[0])
+	if len(add.args) != 1 || add.args[0] != "-i" {
+		t.Fatalf("first command args = %#v, want [-i]", add.args)
 	}
-	if !containsSequence(add, []string{"-U", "-s", Service, "-a", "p::9.9.9.9", "-w", "pw1"}) {
-		t.Fatalf("add-generic-password args missing expected sequence: %#v", add)
+	wantStdin := fmt.Sprintf("add-generic-password -U -s %q -a \"p::9.9.9.9\" -X 707731\n", Service)
+	if add.stdin != wantStdin {
+		t.Fatalf("add-generic-password stdin = %q, want %q", add.stdin, wantStdin)
 	}
 	find := calls[1]
-	if find[0] != "find-generic-password" || !containsSequence(find, []string{"-s", Service, "-a", "p::9.9.9.9", "-w"}) {
-		t.Fatalf("find-generic-password args = %#v", find)
+	if find.args[0] != "find-generic-password" || !containsSequence(find.args, []string{"-s", Service, "-a", "p::9.9.9.9", "-g"}) {
+		t.Fatalf("find-generic-password args = %#v", find.args)
 	}
 	del := calls[2]
-	if del[0] != "delete-generic-password" || !containsSequence(del, []string{"-s", Service, "-a", "p::9.9.9.9"}) {
-		t.Fatalf("delete-generic-password args = %#v", del)
+	if del.args[0] != "delete-generic-password" || !containsSequence(del.args, []string{"-s", Service, "-a", "p::9.9.9.9"}) {
+		t.Fatalf("delete-generic-password args = %#v", del.args)
+	}
+}
+
+func TestParseSecurityGPasswordUTF8Hex(t *testing.T) {
+	// Non-ASCII password "密码!" encoded as UTF-8 hex by `security -g`.
+	out := "attributes:\npassword: 0xE5AF86E7A08121  \"\\345\\257\\206\\347\\240\\201!\"\n"
+	if got := parseSecurityGPassword(out); got != "密码!" {
+		t.Fatalf("parseSecurityGPassword = %q, want 密码!", got)
+	}
+	if got := parseSecurityGPassword("password: \"deadbeef\"\n"); got != "deadbeef" {
+		t.Fatalf("ASCII hex-like password = %q, want deadbeef", got)
 	}
 }
 
@@ -80,7 +95,7 @@ func TestEmptyPasswordDeletes(t *testing.T) {
 	t.Cleanup(func() { runSecurity = oldRunner })
 
 	var calls [][]string
-	runSecurity = func(args []string) (string, int, error) {
+	runSecurity = func(args []string, stdin string) (string, int, error) {
 		calls = append(calls, append([]string(nil), args...))
 		return "", 0, nil
 	}

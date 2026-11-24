@@ -17,6 +17,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"nvrstatus/internal/config"
+	"nvrstatus/internal/health"
 	"nvrstatus/internal/history"
 	"nvrstatus/internal/model"
 	"nvrstatus/internal/scan"
@@ -71,6 +72,7 @@ type Settings struct {
 // App is the window state; the view is rebuilt from it every frame.
 type App struct {
 	win     *mygo.Window
+	postFn  func(func()) // optional test hook to simulate async UI dispatch
 	stateMu sync.Mutex
 	runner  *scan.Runner
 	store   *config.Store
@@ -216,7 +218,7 @@ const allDevices = "全部设备"
 func (a *App) View(c *ui.Context) {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
-	if !a.scanning && c.Shortcut(ui.Cmd, ui.KeyR) {
+	if !a.scanning && !a.singleCheck && c.Shortcut(ui.Cmd, ui.KeyR) {
 		a.startScan()
 	}
 	switch a.themeMode {
@@ -515,8 +517,11 @@ func (a *App) startScan() {
 		}
 		if len(devices) == 1 {
 			rep := a.runner.RunWith(devices[0], opts, deviceName(devices[0], 0), progress, onNVR)
+			// Snapshot cancellation before defer cancel() fires when this goroutine
+			// returns; a.post dispatches asynchronously to the UI thread.
+			cancelled := ctx.Err() != nil
 			a.post(func() {
-				if ctx.Err() != nil {
+				if cancelled {
 					a.finishScanCancelled()
 					return
 				}
@@ -526,8 +531,9 @@ func (a *App) startScan() {
 			return
 		}
 		reps := a.runner.QueueWith(devices, opts, progress, nil, onNVR)
+		cancelled := ctx.Err() != nil
 		a.post(func() {
-			if ctx.Err() != nil {
+			if cancelled {
 				a.finishScanCancelled()
 				return
 			}
@@ -635,11 +641,16 @@ func (a *App) finishScan(rep *model.Report) {
 	a.saveSettings()
 	if a.scanDone != nil {
 		close(a.scanDone)
+		a.scanDone = nil
 	}
 }
 
 // ScanDone is closed when the current scan finishes (tests use it to wait).
-func (a *App) ScanDone() <-chan struct{} { return a.scanDone }
+func (a *App) ScanDone() <-chan struct{} {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.scanDone
+}
 
 // DiffFor returns the last published comparison for a device. The background
 // diff publishes through post(), so callers that are not on the UI thread must
@@ -747,23 +758,36 @@ func (a *App) runSingleCheck() {
 			if a.scanSeq != seq {
 				return
 			}
-			applyUpdate := func(records []model.Record) {
+			applyUpdate := func(rep *model.Report) {
+				if rep == nil {
+					return
+				}
 				for _, u := range updated {
-					for i := range records {
-						if records[i].Channel == u.Channel {
-							records[i] = u
+					for i := range rep.Records {
+						if rep.Records[i].Channel == u.Channel {
+							rep.Records[i] = u
+						}
+					}
+				}
+				rep.DeepAVCheck = true
+				rep.Health = health.Summarize(rep.Cameras, rep.Records, rep.Drives, rep.DiskOverwrite, rep.DeepAVCheck)
+			}
+			if a.report != nil && a.report.IP == targetIP {
+				applyUpdate(a.report)
+				if a.detailOpen {
+					for _, u := range updated {
+						if a.detailRecord.Channel == u.Channel {
+							a.detailRecord = u
 						}
 					}
 				}
 			}
-			if a.report != nil && a.report.IP == targetIP {
-				applyUpdate(a.report.Records)
-			}
 			for i := range a.reports {
 				if a.reports[i].IP == targetIP && (a.report == nil || &a.reports[i] != a.report) {
-					applyUpdate(a.reports[i].Records)
+					applyUpdate(&a.reports[i])
 				}
 			}
+			a.recordLastHealth()
 			a.logf("单路抽检完成："+recs[0].Name, "ok")
 		})
 	}()
@@ -825,6 +849,10 @@ func (a *App) logFromWorker(text, level string) {
 
 // post runs fn on the window's main thread.
 func (a *App) post(fn func()) {
+	if a.postFn != nil {
+		a.postFn(fn)
+		return
+	}
 	if a.win != nil {
 		a.win.Update(fn)
 		return
@@ -858,7 +886,11 @@ func (a *App) loadSettings() {
 }
 
 // SaveSettings persists UI state; called from the app's quit hook.
-func (a *App) SaveSettings() { a.saveSettings() }
+func (a *App) SaveSettings() {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.saveSettings()
+}
 
 func (a *App) saveSettings() {
 	a.settings.Theme = a.themeMode

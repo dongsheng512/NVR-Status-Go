@@ -2,6 +2,7 @@ package isapi
 
 import (
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -234,5 +235,67 @@ func TestDigestChallengeFailureRetriesExactlyOnce(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&requests); got != 2 {
 		t.Fatalf("requests after cached error = %d, want 2", got)
+	}
+}
+
+func TestDigestSHA256AndMultiHeaderSelection(t *testing.T) {
+	headers := []string{
+		`Basic realm="IP Camera"`,
+		`Digest realm="r1", nonce="n1", algorithm=SHA-512-256, qop="auth"`,
+		`Digest realm="r2", nonce="n2", algorithm=SHA-256, qop="auth"`,
+	}
+	resp := &http.Response{Header: http.Header{"Www-Authenticate": headers}}
+	ch, ok := findDigestChallenge(resp)
+	if !ok || ch.Realm != "r2" || ch.Algorithm != "SHA-256" {
+		t.Fatalf("findDigestChallenge = (%+v, %v), want r2/SHA-256", ch, ok)
+	}
+	hdr, err := ch.authorization("GET", "/ISAPI/System/deviceInfo", "admin", "secret")
+	if err != nil {
+		t.Fatalf("SHA-256 authorization: %v", err)
+	}
+	params := parseAuthParams(strings.TrimPrefix(hdr, "Digest "))
+	cnonce := params["cnonce"]
+	sumHex := func(s string) string {
+		h := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(h[:])
+	}
+	ha1 := sumHex("admin:r2:secret")
+	ha2 := sumHex("GET:/ISAPI/System/deviceInfo")
+	want := sumHex(ha1 + ":n2:00000001:" + cnonce + ":auth:" + ha2)
+	if params["response"] != want {
+		t.Fatalf("SHA-256 response = %q, want %q", params["response"], want)
+	}
+}
+
+func TestDigestFailureDoesNotPoisonCacheOrDoubleRetrySameNonce(t *testing.T) {
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.Header().Set("WWW-Authenticate", `Digest realm="r", qop="auth", nonce="same-nonce", algorithm=MD5`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, nil)
+	// First endpoint fails 401 -> challenge must NOT be stored in digest cache.
+	if _, err := client.Parse("/System/deviceInfo", "设备信息"); err == nil {
+		t.Fatal("expected 401")
+	}
+	client.digestMu.Lock()
+	cached := client.digestCh
+	client.digestMu.Unlock()
+	if cached != nil {
+		t.Fatalf("failed 401 retry must not cache digest challenge, got %+v", cached)
+	}
+
+	// Simulate pre-existing cached nonce that is rejected with non-stale same nonce:
+	// must NOT send a second failed attempt (protects against Hikvision admin lockout).
+	client.storeDigest(&digestChallenge{Realm: "r", Nonce: "same-nonce", Qop: "auth", Algorithm: "MD5"})
+	before := atomic.LoadInt32(&requests)
+	if _, err := client.Parse("/System/status", "系统状态"); err == nil {
+		t.Fatal("expected 401 on /System/status")
+	}
+	if got := atomic.LoadInt32(&requests) - before; got != 1 {
+		t.Fatalf("non-stale same-nonce 401 sent %d requests, want 1", got)
 	}
 }

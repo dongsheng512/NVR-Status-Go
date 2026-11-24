@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -57,22 +58,25 @@ type archivedReport struct {
 // SaveReport archives one report and returns the file path. Filenames follow
 // the Python app: <timestamp>_<device>.json, with a numeric suffix on collision.
 func SaveReport(r model.Report) (string, error) {
-	dir := Dir()
-	stamp := time.Now().Format("20060102_150405")
+	dir := filepath.Join(dataDir(), "reports")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("创建历史报告目录失败: %w", err)
+	}
 
 	device := strings.TrimSpace(r.DeviceName)
 	if device == "" {
 		device = "NVR"
 	}
 	device = util.SafeFilename(device, 60)
-	base := fmt.Sprintf("%s_%s", stamp, device)
 
 	saveMu.Lock()
 	defer saveMu.Unlock()
 
+	stamp := time.Now().Format("20060102_150405")
+	base := fmt.Sprintf("%s_%s", stamp, device)
 	path := filepath.Join(dir, base+".json")
 	for n := 1; ; n++ {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		if _, err := os.Stat(path); err != nil {
 			break
 		}
 		path = filepath.Join(dir, fmt.Sprintf("%s_%d.json", base, n))
@@ -98,11 +102,17 @@ func SaveReport(r model.Report) (string, error) {
 		_ = tmp.Close()
 		return "", fmt.Errorf("写入巡检报告失败: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("同步巡检报告失败: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return "", fmt.Errorf("关闭巡检报告失败: %w", err)
 	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		return "", fmt.Errorf("设置巡检报告权限失败: %w", err)
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(tmpName, 0o600); err != nil {
+			return "", fmt.Errorf("设置巡检报告权限失败: %w", err)
+		}
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return "", fmt.Errorf("保存巡检报告失败: %w", err)

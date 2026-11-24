@@ -465,7 +465,12 @@ func (s *Service) rewriteRTSPTimes(playbackURI string, clipS, clipE time.Time, m
 	short = endTimeRe.ReplaceAllStringFunc(short, func(string) string {
 		return "endtime=" + s.fmtRTSPTimeMode(clipE, mode)
 	})
-	short = sizeParamRe.ReplaceAllString(short, "")
+	short = sizeParamRe.ReplaceAllStringFunc(short, func(m string) string {
+		if strings.HasPrefix(m, "?") {
+			return "?"
+		}
+		return ""
+	})
 	short = strings.ReplaceAll(short, "?&", "?")
 	short = doubleAmpRe.ReplaceAllString(short, "&")
 	short = strings.TrimRight(short, "?&")
@@ -481,7 +486,7 @@ type candidate struct {
 // with every `@554` fallback last. `@554` is only a fallback for a broken
 // original port; letting it jump the queue would add another long timeout to
 // every normal probe.
-func candidateOrder(label string) (int, int, string) {
+func candidateOrder(label string) (int, int) {
 	portRank := 0
 	if strings.HasSuffix(label, "@554") {
 		portRank = 1
@@ -490,21 +495,21 @@ func candidateOrder(label string) (int, int, string) {
 	if strings.HasPrefix(label, "original") {
 		originRank = 0
 	}
-	return portRank, originRank, label
+	return portRank, originRank
 }
 
 func sortCandidates(in []candidate) []candidate {
 	out := append([]candidate(nil), in...)
 	sort.SliceStable(out, func(i, j int) bool {
-		pi, oi, li := candidateOrder(out[i].Label)
-		pj, oj, lj := candidateOrder(out[j].Label)
+		pi, oi := candidateOrder(out[i].Label)
+		pj, oj := candidateOrder(out[j].Label)
 		if pi != pj {
 			return pi < pj
 		}
 		if oi != oj {
 			return oi < oj
 		}
-		return li < lj
+		return false
 	})
 	return out
 }
@@ -671,7 +676,7 @@ func (s *Service) saveClipFile(tmpPath, trackID, channel, name string, clipStart
 	}
 	// If a separate audio track was pulled successfully, mux it with the
 	// video instead of saving a silent video-only clip.
-	if audioPath != "" && s.FFmpeg != "" && fileSize(audioPath) >= 1024 {
+	if audioPath != "" && s.FFmpeg != "" && fileSize(audioPath) >= 512 {
 		args := []string{
 			s.FFmpeg, "-y", "-hide_banner", "-loglevel", "error",
 			"-i", tmpPath, "-i", audioPath,
@@ -679,19 +684,26 @@ func (s *Service) saveClipFile(tmpPath, trackID, channel, name string, clipStart
 			"-f", "matroska", dest,
 		}
 		res, err := s.runCommand(args, 30*time.Second)
+		if errors.Is(err, util.ErrCancelled) {
+			_ = os.Remove(dest)
+			return ""
+		}
 		if err == nil && res.ExitCode == 0 && fileSize(dest) >= 1024 {
 			return dest
 		}
-		_ = os.Remove(dest)
 		s.log("音频合并失败，改为保存视频片段")
 	}
 	src, err := os.Open(tmpPath)
 	if err != nil {
+		_ = os.Remove(dest)
 		return ""
 	}
 	defer src.Close()
-	dst, err := os.Create(dest)
+	// Overwrite the already-reserved placeholder in place so another worker
+	// cannot claim the same path between removal and creation.
+	dst, err := os.OpenFile(dest, os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
+		_ = os.Remove(dest)
 		return ""
 	}
 	if _, err := io.Copy(dst, src); err != nil {
@@ -1025,6 +1037,23 @@ func severityOf(status string) int {
 
 func avSeverity(video, audio string) int {
 	return max(severityOf(video), severityOf(audio))
+}
+
+// retryImproves reports whether a retry result is genuinely better than the
+// initial probe. An inconclusive retry (StatusUnknown/StatusSkip from a timeout
+// or missing URI) must never overwrite a confirmed StatusBad.
+func retryImproves(oldV, oldA, newV, newA string) bool {
+	if avSeverity(newV, newA) >= avSeverity(oldV, oldA) {
+		return false
+	}
+	// Do not mask a confirmed bad video/audio result with an inconclusive retry.
+	if oldV == model.StatusBad && (newV == model.StatusUnknown || newV == model.StatusSkip) {
+		return false
+	}
+	if oldA == model.StatusBad && (newA == model.StatusUnknown || newA == model.StatusSkip) {
+		return false
+	}
+	return true
 }
 
 func avNeedsRetry(video, audio, detail string) bool {
@@ -1800,7 +1829,7 @@ func (s *Service) Run(records []model.Record) error {
 				oldV, oldA := rec.VideoProbe, rec.AudioProbe
 				oldDetail := rec.ProbeDetail
 				oldSavePath := rec.SavePath
-				if avSeverity(newRes.VideoProbe, newRes.AudioProbe) < avSeverity(oldV, oldA) {
+				if retryImproves(oldV, oldA, newRes.VideoProbe, newRes.AudioProbe) {
 					if oldSavePath != "" && oldSavePath != newRes.SavePath {
 						_ = os.Remove(oldSavePath)
 					}

@@ -793,8 +793,8 @@ func TestDiskBadWarningSample(t *testing.T) {
 		records = append(records, r)
 	}
 	summary := Summarize(nil, records, nil, overwriteEnabled(), false)
-	if !containsWarning(summary.Warnings, "6个通道近期无录像") {
-		t.Fatalf("warnings %v missing disk-bad warning", summary.Warnings)
+	if !containsWarning(summary.Warnings, "6个通道近期无录像: 1(通道1)") || !containsWarning(summary.Warnings, "等6路") {
+		t.Fatalf("warnings %v missing disk-bad sample + count", summary.Warnings)
 	}
 
 	few := []model.Record{
@@ -832,5 +832,16 @@ func TestDeepProbeWarnings(t *testing.T) {
 		if !containsWarning(summary.Warnings, want) {
 			t.Fatalf("warnings %v do not contain %q", summary.Warnings, want)
 		}
+	}
+}
+
+func TestOfflineCameraEmptyNameNoEmptyParens(t *testing.T) {
+	cams := []model.Camera{{ID: "1", Name: "   ", Online: "false"}}
+	summary := Summarize(cams, nil, nil, overwriteEnabled(), false)
+	if containsWarning(summary.Warnings, "()") {
+		t.Fatalf("offline warning should not contain empty parens: %v", summary.Warnings)
+	}
+	if !containsWarning(summary.Warnings, "1个摄像头离线") {
+		t.Fatalf("warnings %v missing offline warning", summary.Warnings)
 	}
 }

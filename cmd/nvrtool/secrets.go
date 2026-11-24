@@ -213,15 +213,18 @@ func walkTextFiles(root string) []string {
 }
 
 func stagedTextFiles() ([]string, error) {
-	out, err := exec.Command("git", "diff", "--cached", "--name-only", "--diff-filter=ACM").Output()
+	// -c core.quotePath=false + -z prevents Git from quoting/octal-escaping
+	// non-ASCII filenames (e.g. Chinese docs), which previously broke extension
+	// detection and let Chinese-named files bypass the secret gate.
+	out, err := exec.Command("git", "-c", "core.quotePath=false", "diff", "--cached", "--name-only", "--no-relative", "-z", "--diff-filter=ACM").Output()
 	if err != nil {
 		return nil, err
 	}
 	var files []string
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && isTextFile(line) {
-			files = append(files, line)
+	for _, entry := range strings.Split(string(out), "\x00") {
+		entry = strings.TrimSpace(entry)
+		if entry != "" && isTextFile(entry) {
+			files = append(files, entry)
 		}
 	}
 	return files, nil

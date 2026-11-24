@@ -4,6 +4,7 @@ package credentials
 
 import (
 	"encoding/binary"
+	"runtime"
 	"strings"
 	"syscall"
 	"unicode/utf16"
@@ -66,15 +67,29 @@ func platformSetPassword(account, password string) bool {
 		UserName:           user,
 	}
 	ok, _, _ := procCredWrite.Call(uintptr(unsafe.Pointer(&cred)), 0)
+	runtime.KeepAlive(target)
+	runtime.KeepAlive(user)
+	runtime.KeepAlive(blob)
+	runtime.KeepAlive(&cred)
 	if ok == 0 {
 		return false
 	}
-	// Clean up the legacy single-slot entry written by old Python releases so
-	// a stale password can never be read back for a different device.
-	if legacy, e := syscall.UTF16PtrFromString(Service); e == nil {
-		_, _, _ = procCredDelete.Call(uintptr(unsafe.Pointer(legacy)), credTypeGeneric, 0)
-	}
+	// Clean up the legacy single-slot entry only if it belongs to this account,
+	// so saving device A never deletes device B's unmigrated legacy password.
+	deleteLegacyIfOwned(account)
 	return true
+}
+
+func deleteLegacyIfOwned(account string) {
+	if cred := readCredentialPtr(Service); cred != nil {
+		if utf16PtrToString(cred.UserName) == account {
+			if legacy, err := syscall.UTF16PtrFromString(Service); err == nil {
+				_, _, _ = procCredDelete.Call(uintptr(unsafe.Pointer(legacy)), credTypeGeneric, 0)
+				runtime.KeepAlive(legacy)
+			}
+		}
+		procCredFree.Call(uintptr(unsafe.Pointer(cred)))
+	}
 }
 
 func platformGetPassword(account string) string {
@@ -89,16 +104,9 @@ func platformGetPassword(account string) string {
 func platformDeletePassword(account string) {
 	if target, err := syscall.UTF16PtrFromString(winTarget(account)); err == nil {
 		_, _, _ = procCredDelete.Call(uintptr(unsafe.Pointer(target)), credTypeGeneric, 0)
+		runtime.KeepAlive(target)
 	}
-	// Delete the legacy slot only when it belongs to this account.
-	if cred := readCredentialPtr(Service); cred != nil {
-		if utf16PtrToString(cred.UserName) == account {
-			if legacy, err := syscall.UTF16PtrFromString(Service); err == nil {
-				_, _, _ = procCredDelete.Call(uintptr(unsafe.Pointer(legacy)), credTypeGeneric, 0)
-			}
-		}
-		procCredFree.Call(uintptr(unsafe.Pointer(cred)))
-	}
+	deleteLegacyIfOwned(account)
 }
 
 func readCredential(target, wantUser string) string {
@@ -125,6 +133,8 @@ func readCredentialPtr(target string) *credentialW {
 		0,
 		uintptr(unsafe.Pointer(&cred)),
 	)
+	runtime.KeepAlive(name)
+	runtime.KeepAlive(&cred)
 	if ok == 0 || cred == nil {
 		return nil
 	}

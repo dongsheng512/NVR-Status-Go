@@ -333,9 +333,11 @@ func (c *Client) doRequest(method, endpoint, body string) (*http.Response, error
 	}
 
 	var preAuth string
+	var usedNonce string
 	if ch, nc := c.cachedDigest(); ch != nil {
 		if auth, err := ch.authorizationWithNC(method, uri, c.cfg.Username, c.cfg.Password, nc); err == nil {
 			preAuth = auth
+			usedNonce = ch.Nonce
 		}
 	}
 
@@ -350,20 +352,31 @@ func (c *Client) doRequest(method, endpoint, body string) (*http.Response, error
 	if !ok {
 		return resp, nil
 	}
+	// If pre-auth failed on the exact same non-stale nonce, the credentials
+	// themselves were rejected; clear cache and return 401 without doubling
+	// failed auth attempts (which would lock out Hikvision admin accounts).
+	if preAuth != "" && !challenge.Stale && challenge.Nonce == usedNonce {
+		c.clearDigest()
+		return resp, nil
+	}
 
 	// Consume the challenge body so the connection can be reused, then retry
 	// exactly once with the computed Authorization header.
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	_ = resp.Body.Close()
 
-	nc := c.storeDigest(challenge)
-	authorization, err := challenge.authorizationWithNC(method, uri, c.cfg.Username, c.cfg.Password, nc)
+	authorization, err := challenge.authorizationWithNC(method, uri, c.cfg.Username, c.cfg.Password, 1)
 	if err != nil {
 		return nil, err
 	}
 	resp, err = c.send(ctx, method, rawURL, body, authorization)
 	if err != nil {
 		return nil, wrapTransportError(endpoint, err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		c.storeDigest(challenge)
+	} else {
+		c.clearDigest()
 	}
 	return resp, nil
 }
@@ -378,16 +391,21 @@ func (c *Client) cachedDigest() (*digestChallenge, uint32) {
 	return c.digestCh, c.digestNC
 }
 
-func (c *Client) storeDigest(ch *digestChallenge) uint32 {
+func (c *Client) storeDigest(ch *digestChallenge) {
 	c.digestMu.Lock()
 	defer c.digestMu.Unlock()
 	if c.digestCh != nil && c.digestCh.Nonce == ch.Nonce && c.digestCh.Realm == ch.Realm {
-		c.digestNC++
-		return c.digestNC
+		return
 	}
 	c.digestCh = ch
 	c.digestNC = 1
-	return 1
+}
+
+func (c *Client) clearDigest() {
+	c.digestMu.Lock()
+	c.digestCh = nil
+	c.digestNC = 0
+	c.digestMu.Unlock()
 }
 
 func (c *Client) send(ctx context.Context, method, rawURL, body, authorization string) (*http.Response, error) {

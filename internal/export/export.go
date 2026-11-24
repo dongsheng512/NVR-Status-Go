@@ -155,23 +155,61 @@ func ExportCSV(path string, r model.Report) error {
 	return nil
 }
 
-// ExportTXT writes a plain-text report: a free-form summary, followed by the
-// per-channel table.
+// ExportTXT writes a plain-text report: a free-form summary (synthesized from r
+// when summary is empty), followed by the per-channel table.
 func ExportTXT(path string, r model.Report, summary string) error {
-	lines := []string{strings.TrimSpace(summary), "", "【通道明细】"}
+	head := strings.TrimSpace(summary)
+	if head == "" {
+		head = buildDefaultTXTSummary(r)
+	}
+	lines := []string{head, "", "【通道明细】"}
 	header := []string{"通道", "名称", "在线", "录像含音频", "落盘状态", "录像是否正常"}
 	if r.DeepAVCheck {
 		header = append(header, "视频抽检", "音频抽检")
 	}
 	lines = append(lines, strings.Join(header, "\t"))
 	for _, record := range r.Records {
-		lines = append(lines, strings.Join(recordValues(record, r.DeepAVCheck), "\t"))
+		vals := recordValues(record, r.DeepAVCheck)
+		for i, v := range vals {
+			vals[i] = sanitizeTSVCell(v)
+		}
+		lines = append(lines, strings.Join(vals, "\t"))
 	}
 	content := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("写入 TXT 失败: %w", err)
 	}
 	return nil
+}
+
+func buildDefaultTXTSummary(r model.Report) string {
+	var b []string
+	b = append(b, fmt.Sprintf("NVR 巡检报告 · %s (%s)", orDefault(r.DeviceName, "NVR"), orDefault(r.IP, "—")))
+	b = append(b, fmt.Sprintf("导出时间: %s", time.Now().Format("2006-01-02 15:04:05")))
+	if r.Info["型号"] != "" || r.Info["固件版本"] != "" {
+		b = append(b, fmt.Sprintf("型号/固件: %s / %s", orDefault(r.Info["型号"], "—"), orDefault(r.Info["固件版本"], "—")))
+	}
+	b = append(b, fmt.Sprintf("健康状态: %s", orDefault(r.Health.Status, "未知")))
+	if r.Error != "" {
+		b = append(b, fmt.Sprintf("错误信息: %s", r.Error))
+	}
+	if len(r.Health.Warnings) > 0 {
+		b = append(b, "预警信息:")
+		for _, w := range r.Health.Warnings {
+			b = append(b, "  - "+w)
+		}
+	}
+	if len(r.Drives) > 0 {
+		b = append(b, fmt.Sprintf("硬盘 (%d 块, 循环覆盖: %s):", len(r.Drives), orDefault(r.DiskOverwrite.Label, "未知")))
+		for _, d := range r.Drives {
+			b = append(b, fmt.Sprintf("  - %s %s %sTB 使用率 %s 状态 %s", d.Name, d.Type, d.CapacityTB, d.Usage, d.Status))
+		}
+	}
+	return strings.Join(b, "\n")
+}
+
+func sanitizeTSVCell(s string) string {
+	return strings.NewReplacer("\t", " ", "\r", " ", "\n", " ").Replace(s)
 }
 
 // summaryRows returns the ordered 汇总项 rows, using the same friendly labels
